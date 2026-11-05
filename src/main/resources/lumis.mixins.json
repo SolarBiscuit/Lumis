@@ -1,0 +1,21 @@
+{
+  "required": true,
+  "minVersion": "0.8.5",
+  "package": "com.solarbiscuit.atmosphera.lumis.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "lumis.refmap.json",
+  "client": [
+    "BlockEntityRenderDispatcherMixin",
+    "ClientChunkCacheMixin",
+    "ClientLevelMixin",
+    "EntityRenderDispatcherMixin",
+    "EntityRendererMixin",
+    "ItemInHandRendererMixin",
+    "LevelRendererEntityMixin",
+    "LightTextureMixin",
+    "LightingMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

@@ -1,0 +1,35 @@
+modLoader = "javafml"
+loaderVersion = "${loader_version_range}"
+license = "${mod_license}"
+
+[[mods]]
+ modId = "${mod_id}"
+ version = "${mod_version}"
+ displayName = "${mod_name}"
+ authors = "${mod_authors}"
+ credits = "Made by SolarBiscuit. MIT licensed: keep the copyright notice in copies of the code."
+ description = '''${mod_description}'''
+ # Client-only: never required on servers, never blocks joining a server without it.
+ displayTest = "IGNORE_ALL_VERSION"
+
+[[dependencies.${mod_id}]]
+  modId = "forge"
+  mandatory = true
+  versionRange = "${forge_version_range}"
+  ordering = "NONE"
+  side = "CLIENT"
+
+[[dependencies.${mod_id}]]
+  modId = "minecraft"
+  mandatory = true
+  versionRange = "${minecraft_version_range}"
+  ordering = "NONE"
+  side = "CLIENT"
+
+# Shader patching, vertex bits, frame uniforms and the wind service. Constructed first so Lumis can register.
+[[dependencies.${mod_id}]]
+  modId = "atmospheralib"
+  mandatory = true
+  versionRange = "${lib_version_range}"
+  ordering = "AFTER"
+  side = "CLIENT"

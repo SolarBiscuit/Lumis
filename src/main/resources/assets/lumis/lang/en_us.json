@@ -1,0 +1,9 @@
+{
+    "atmosphera.feature.lumis.lightmap": "Light colour",
+    "atmosphera.feature.lumis.sun_shading": "Sun shading",
+    "atmosphera.feature.lumis.lod_sun_shading": "Sun shading on Voxy LODs",
+    "atmosphera.feature.lumis.entity_light": "Entity sun light",
+    "atmosphera.feature.lumis.sun_shadows": "Sun shadows",
+    "atmosphera.feature.lumis.light_shafts": "Light shafts",
+    "atmosphera.feature.lumis.colored_light": "Coloured block light"
+}

@@ -1,0 +1,29 @@
+# Heavily filtered: ignore everything, then whitelist only what builds the
+# mods and carries their license/notices. Works at the root and inside each
+# subproject repo (keep the patterns anchored with a leading "/").
+*
+
+# Keep directories so whitelisted files underneath them are reachable
+!*/
+
+# This file and submodule wiring
+!/.gitignore
+!/.gitmodules
+
+# Gradle build scripts and wrapper
+!/*.gradle
+!/gradle.properties
+!/gradlew
+!/gradlew.bat
+!/gradle/**
+
+# Sources and resources
+!/src/**
+
+# Compile-only jars the build depends on (not build outputs)
+!/libs/*.jar
+
+# Licenses and notices
+!/LICENSE
+!/LICENSE.*
+!/*NOTICE*
