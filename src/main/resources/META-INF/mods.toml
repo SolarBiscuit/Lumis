@@ -7,7 +7,7 @@ license = "${mod_license}"
  version = "${mod_version}"
  displayName = "${mod_name}"
  authors = "${mod_authors}"
- credits = "Made by SolarBiscuit. MIT licensed: keep the copyright notice in copies of the code."
+ credits = "Made by SolarBiscuit. GPL-3.0-only. Keep the copyright and attribution notices (see NOTICE)."
  description = '''${mod_description}'''
  # Client-only: never required on servers, never blocks joining a server without it.
  displayTest = "IGNORE_ALL_VERSION"
