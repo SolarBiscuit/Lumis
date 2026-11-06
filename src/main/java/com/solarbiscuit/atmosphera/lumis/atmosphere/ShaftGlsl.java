@@ -123,7 +123,10 @@ final class ShaftGlsl {
                 bool cookie = u_Cookie.x > 0.0;
                 bool glow = u_Glow.x > 0.0;
                 float jitter = lumis_ign(gl_FragCoord.xy);
-                int steps = u_Info.y;
+                // Steps follow the ray length (0.6.7): the steps are energy-conserving, so the count no longer changes
+                // brightness, and a ray that ends at a wall a few blocks away does not need the full count. sqrt keeps
+                // mid-length rays near it; sky pixels (len = limit) keep all of them.
+                int steps = clamp(int(ceil(float(u_Info.y) * sqrt(len / u_Medium.w))), min(2, u_Info.y), u_Info.y);
                 float inscatter = 0.0;
                 vec3 inscatterTint = vec3(0.0);
                 vec3 glowLight = vec3(0.0);
