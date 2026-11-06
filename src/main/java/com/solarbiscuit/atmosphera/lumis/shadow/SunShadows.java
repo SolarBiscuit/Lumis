@@ -4,6 +4,7 @@ import com.solarbiscuit.atmosphera.lib.feature.AtmosFeature;
 import com.solarbiscuit.atmosphera.lib.feature.Capability;
 import com.solarbiscuit.atmosphera.lib.gpu.FrameUniforms;
 import com.solarbiscuit.atmosphera.lib.gpu.TerrainSamplers;
+import com.solarbiscuit.atmosphera.lib.world.ColumnField;
 import com.solarbiscuit.atmosphera.lib.shader.ShaderHook;
 import com.solarbiscuit.atmosphera.lib.shader.ShaderSnippets;
 import com.solarbiscuit.atmosphera.lumis.Lumis;
@@ -11,16 +12,11 @@ import com.solarbiscuit.atmosphera.lumis.LumisConfig;
 import com.solarbiscuit.atmosphera.lumis.lightmap.DimensionProfiles;
 import com.solarbiscuit.atmosphera.lumis.lightmap.LightmapGrader;
 import com.solarbiscuit.atmosphera.lumis.sun.SunModel;
-import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.Vec3;
-import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.level.ChunkEvent;
 
 /**
  * Lumis 0.2 sun shadows ({@code lumis:sun_shadows}): the heightfield, the horizon map built from it, the terrain
@@ -66,8 +62,8 @@ public final class SunShadows {
             Vec3 camera = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
             out[0] = (float) (camera.x - HorizonMap.centreX);
             out[1] = (float) (camera.z - HorizonMap.centreZ);
-            out[2] = Math.max(16, Heightfield.n);
-            out[3] = Heightfield.minY;
+            out[2] = Math.max(16, ColumnField.size());
+            out[3] = ColumnField.minY();
         });
         FrameUniforms.vec4("lumis_ShadowSun", "xy: horizontal direction to the sun, z: tan(elevation), w: penumbra per block", out -> {
             out[0] = HorizonMap.dirX;
@@ -81,9 +77,6 @@ public final class SunShadows {
             out[2] = HorizonMap.sameDirection ? HorizonMap.tanNow : HorizonMap.tan;
         });
 
-        MinecraftForge.EVENT_BUS.addListener(SunShadows::onChunkLoad);
-        MinecraftForge.EVENT_BUS.addListener(SunShadows::onChunkUnload);
-        MinecraftForge.EVENT_BUS.addListener(SunShadows::onLogin);
     }
 
     /** Sun shadows are running and the horizon map is built (light shafts can march it). */
@@ -93,7 +86,7 @@ public final class SunShadows {
 
     /** Half the heightfield window in blocks. */
     public static int windowRadius() {
-        return Heightfield.n / 2;
+        return ColumnField.size() / 2;
     }
 
     /** Once per frame, after {@link SunModel#update}. */
@@ -108,14 +101,13 @@ public final class SunShadows {
             if (running) {
                 running = false;
                 HorizonMap.release();
-                Heightfield.release();
+                ColumnField.stop(SunShadows.class);
             }
             return;
         }
         running = true;
-        Heightfield.ensure(level, LumisConfig.shadowQuality.get().size);
-        Camera camera = mc.gameRenderer.getMainCamera();
-        Heightfield.update(Mth.floor(camera.getPosition().x) >> 4, Mth.floor(camera.getPosition().z) >> 4);
+        // The heightfield is the lib's column field since Lumis 0.7.0 (lib 0.5.0): shared with Torrente and Gale.
+        ColumnField.use(SunShadows.class, level, LumisConfig.shadowQuality.get().size);
         HorizonMap.update(SunModel.dirX, SunModel.dirY, SunModel.dirZ, LumisConfig.shadowQuality.get().interval);
     }
 
@@ -150,7 +142,7 @@ public final class SunShadows {
 
     /** CPU version of {@code atmos_sunVisibility}, marching the heightfield (an entity's centre, not a surface). */
     static float visibility(double x, double y, double z) {
-        int half = Heightfield.n / 2;
+        int half = ColumnField.size() / 2;
         double rx = x - HorizonMap.centreX;
         double rz = z - HorizonMap.centreZ;
         double edge = half - 16 - Math.max(Math.abs(rx), Math.abs(rz));
@@ -159,16 +151,16 @@ public final class SunShadows {
         }
         int ix = Mth.floor(x);
         int iz = Mth.floor(z);
-        int own = Heightfield.raw(ix, iz);
+        int own = ColumnField.casterRaw(ix, iz);
         float vis;
-        if (own != 0 && y + 0.25 < Heightfield.top(own)) {
+        if (own != 0 && y + 0.25 < ColumnField.top(own)) {
             vis = 0f;
         } else {
             // The march reads the heightfield directly, so it can use the sun as it is now.
             float tan = HorizonMap.sameDirection ? HorizonMap.tanNow : HorizonMap.tan;
             float dx = HorizonMap.dirX;
             float dz = HorizonMap.dirZ;
-            double room = Heightfield.maxTop - y + 2.0;
+            double room = ColumnField.maxTop() - y + 2.0;
             if (room <= 0) {
                 return 1f;
             }
@@ -176,9 +168,9 @@ public final class SunShadows {
             float best = -1e4f;
             int bestT = 0;
             for (int t = 1; t <= steps; t++) {
-                int raw = Heightfield.raw(Mth.floor(ix + 0.5 + t * dx), Mth.floor(iz + 0.5 + t * dz));
+                int raw = ColumnField.casterRaw(Mth.floor(ix + 0.5 + t * dx), Mth.floor(iz + 0.5 + t * dz));
                 if (raw != 0) {
-                    float s = Heightfield.top(raw) - (t - 0.5f) * tan;
+                    float s = ColumnField.top(raw) - (t - 0.5f) * tan;
                     if (s > best) {
                         best = s;
                         bestT = t;
@@ -192,29 +184,5 @@ public final class SunShadows {
         }
         float fade = (float) Math.min(1.0, edge / 32.0) * LumisConfig.shadowStrength.get().floatValue();
         return 1f - (1f - vis) * fade;
-    }
-
-    private static void onChunkLoad(ChunkEvent.Load event) {
-        if (running && event.getLevel().isClientSide() && event.getChunk() instanceof LevelChunk chunk) {
-            Heightfield.onChunkLoad(chunk);
-        }
-    }
-
-    private static void onChunkUnload(ChunkEvent.Unload event) {
-        if (running && event.getLevel().isClientSide() && event.getChunk() instanceof LevelChunk chunk) {
-            Heightfield.onChunkUnload(chunk);
-        }
-    }
-
-    private static void onLogin(ClientPlayerNetworkEvent.LoggingIn event) {
-        // Block-state ids may differ per server: classify again.
-        CasterTable.reset();
-    }
-
-    /** From the block-update mixin. */
-    public static void onBlockChanged(net.minecraft.core.BlockPos pos, net.minecraft.world.level.block.state.BlockState state) {
-        if (running) {
-            Heightfield.onBlockChanged(pos, state);
-        }
     }
 }

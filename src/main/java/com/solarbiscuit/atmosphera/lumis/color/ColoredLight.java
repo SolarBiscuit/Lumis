@@ -212,12 +212,14 @@ public final class ColoredLight {
         if (!running || Lumis.stopping) {
             return;
         }
-        int previous = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
-        GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
-        GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, HueVolume.texture());
-        GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
-        GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, FarHue.texture());
-        GL13C.glActiveTexture(previous);
+        // Direct state access where available: the active unit is not read (0.6.8).
+        com.solarbiscuit.atmosphera.lib.gpu.AtmosGl.bindTextureUnit(15, GL12C.GL_TEXTURE_3D, HueVolume.texture());
+        com.solarbiscuit.atmosphera.lib.gpu.AtmosGl.bindTextureUnit(14, GL12C.GL_TEXTURE_3D, FarHue.texture());
+    }
+
+    /** What the LOD binding leaves on unit 14's 3D target (the far volume), for passes that borrow that target. */
+    public static int lodUnit14Texture() {
+        return running && !Lumis.stopping ? FarHue.texture() : 0;
     }
 
     private static boolean dumped;

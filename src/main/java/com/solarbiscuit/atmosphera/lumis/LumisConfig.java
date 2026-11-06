@@ -40,6 +40,7 @@ public final class LumisConfig {
     public static AtmosOption<Double> shaftHeightTint;
     public static AtmosOption<Double> shaftSkyCookie;
     public static AtmosOption<Double> shaftBlockGlow;
+    public static AtmosOption<Boolean> shaftTemporal;
     public static AtmosConfig.FeatureSwitch coloredLight;
     public static AtmosOption<com.solarbiscuit.atmosphera.lumis.color.ColoredLight.Quality> colorQuality;
     public static AtmosOption<Double> colorStrength;
@@ -137,6 +138,9 @@ public final class LumisConfig {
                 "Lanterns, torches, lava and other lights glow in the mist in their own colour, mostly at night. "
                         + "Follows the game's light, so the glow stops at walls. Needs coloured light and sun shadows "
                         + "(AUTO light shafts). 0 is off.");
+        shaftTemporal = config.toggle("temporal", true, ChangeTier.LIVE, "Temporal light shafts",
+                "Each frame marches half the steps at a shifting offset and blends with the frames before (the camera's "
+                        + "motion is followed), for smoother beams at lower cost. Off: every frame marches all steps.");
         shaftDebug = config.slider("debug", 0, 0, 3, 1, ChangeTier.LIVE, "Light shaft debug view",
                 "For testing: 1 march length / depth / sky (radial: open-sky share / falloff), 2 sun visibility in the "
                         + "air, 3 raw light. 0 is off.");

@@ -377,30 +377,18 @@ final class HueVolume {
         FREE_BATCHES.push(batch);
     }
 
-    private static final int[] UNPACK_NAMES = {GL11C.GL_UNPACK_ROW_LENGTH, GL11C.GL_UNPACK_SKIP_ROWS,
-            GL11C.GL_UNPACK_SKIP_PIXELS, GL11C.GL_UNPACK_ALIGNMENT, GL12C.GL_UNPACK_IMAGE_HEIGHT, GL12C.GL_UNPACK_SKIP_IMAGES};
-    private static final int[] UNPACK_TIGHT = {0, 0, 0, 4, 0, 0};
-    private static final int[] unpackSaved = new int[UNPACK_NAMES.length];
-    private static int unpackPbo;
 
     /**
      * Tight client-memory unpacking for our uploads. Vanilla leaves row length and skips set by its texture uploads,
      * and with them the driver reads past our 16 KB buffer (an access violation inside the AMD driver in testing).
      */
     static void beginUnpack() {
-        unpackPbo = GL11C.glGetInteger(GL21C.GL_PIXEL_UNPACK_BUFFER_BINDING);
-        GL21C.glBindBuffer(GL21C.GL_PIXEL_UNPACK_BUFFER, 0);
-        for (int i = 0; i < UNPACK_NAMES.length; i++) {
-            unpackSaved[i] = GL11C.glGetInteger(UNPACK_NAMES[i]);
-            GL11C.glPixelStorei(UNPACK_NAMES[i], UNPACK_TIGHT[i]);
-        }
+        // Lib 0.3.23: one query per batch (the unpack buffer); the unpack values are left at the GL defaults.
+        com.solarbiscuit.atmosphera.lib.gpu.Uploads.begin(4);
     }
 
     static void endUnpack() {
-        for (int i = 0; i < UNPACK_NAMES.length; i++) {
-            GL11C.glPixelStorei(UNPACK_NAMES[i], unpackSaved[i]);
-        }
-        GL21C.glBindBuffer(GL21C.GL_PIXEL_UNPACK_BUFFER, unpackPbo);
+        com.solarbiscuit.atmosphera.lib.gpu.Uploads.end();
     }
 
     private static boolean inWindow(int sx, int sy, int sz) {
@@ -724,15 +712,9 @@ final class HueVolume {
         } else {
             upload.put(rgba).flip();
         }
-        int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
-        GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
-        int previous = GL11C.glGetInteger(GL12C.GL_TEXTURE_BINDING_3D);
-        GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, texture);
-        // Texel layout: x fastest, then y, then z (rows, then images).
-        GL12C.glTexSubImage3D(GL12C.GL_TEXTURE_3D, 0, x * 16, y * 16, z * 16, 16, 16, 16, GL11C.GL_RGBA,
-                GL11C.GL_UNSIGNED_BYTE, upload);
-        GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, previous);
-        GL13C.glActiveTexture(previousUnit);
+        // Texel layout: x fastest, then y, then z (rows, then images). Direct state access where available (0.6.8).
+        com.solarbiscuit.atmosphera.lib.gpu.AtmosGl.texSubImage3D(15, texture, x * 16, y * 16, z * 16, 16, 16, 16,
+                GL11C.GL_RGBA, GL11C.GL_UNSIGNED_BYTE, upload);
     }
 
     /**

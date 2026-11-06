@@ -1,6 +1,6 @@
 package com.solarbiscuit.atmosphera.lumis.color;
 
-import com.solarbiscuit.atmosphera.lumis.util.SectionReader;
+import com.solarbiscuit.atmosphera.lib.world.SectionReader;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;

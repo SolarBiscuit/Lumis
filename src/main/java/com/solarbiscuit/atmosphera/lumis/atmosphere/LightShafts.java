@@ -114,6 +114,11 @@ public final class LightShafts {
     private static Program rayMask;
     private static Program rayBlur;
     private static Program composite;
+    private static Program resolve;
+    private static int[] resolveReproject;
+    /** Temporal history of the low-resolution light (0.7.1). */
+    private static RenderTargets.History history;
+    private static int temporalFrame;
     private static boolean failed;
     private static boolean warnedFabulous;
     /** Smoothed sky light at the eye, 0..1: no haze in caves or houses. */
@@ -198,6 +203,7 @@ public final class LightShafts {
 
         boolean volumetric = marchPossible;
         Quality quality = LumisConfig.shaftQuality.get();
+        boolean temporal = volumetric && LumisConfig.shaftTemporal.get() && LumisConfig.shaftDebug.get() == 0;
         int divisor = volumetric ? quality.divisor : 4;
         // Resolution cap (0.6.0): above 1440p the divisor grows so the low-resolution target keeps about the same
         // number of lines, so 4K costs what 1440p does.
@@ -244,6 +250,19 @@ public final class LightShafts {
         if (!low.ensure(scene)) {
             return;
         }
+        if (temporal) {
+            if (history == null) {
+                history = RenderTargets.history("Lumis light shafts", divisor, GL30C.GL_RGBA16F);
+            }
+            if (!history.ensure(scene)) {
+                temporal = false;
+            } else if (!ctx.continuous()) {
+                history.invalidate();
+            }
+        } else if (history != null) {
+            history.release();
+            history = null;
+        }
         if (rays && !(rayA.ensure(scene) && rayB.ensure(scene))) {
             rays = false;
             if (!volumetric) {
@@ -277,7 +296,11 @@ public final class LightShafts {
                 GL20C.glUniform1i(p.u()[0], 12);
                 GL20C.glUniform1i(p.u()[1], 13);
                 GL20C.glUniformMatrix4fv(p.u()[2], false, ctx.invViewProjection().get(stack.mallocFloat(16)));
-                GL20C.glUniform4i(p.u()[3], divisor, quality.steps, debug, sunOn ? 1 : 0);
+                // Temporal (0.7.1): half the steps per frame, the history makes up the rest.
+                int marchSteps = temporal ? Math.max(4, quality.steps / 2) : quality.steps;
+                GL20C.glUniform4i(p.u()[3], divisor, marchSteps, debug, sunOn ? 1 : 0);
+                temporalFrame = (temporalFrame + 1) & 1023;
+                GL20C.glUniform4f(p.u()[14], temporal ? (temporalFrame * 0.618034f) % 1f : 0f, 0f, 0f, 0f);
                 GL20C.glUniform4f(p.u()[4], r, g, b, 0f);
                 float mist = LumisConfig.shaftMist.get().floatValue();
                 float density = 0.0035f * (0.5f + mist) * (1f + 2f * golden) * (1f + 2f * rain);
@@ -303,7 +326,6 @@ public final class LightShafts {
                 GL20C.glUniform4f(p.u()[12], glowGain, ColoredLight.glowReach(), 0f, 0f);
                 GL20C.glUniform1i(p.u()[13], 14);
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
-                hueSaved = GL11C.glGetInteger(GL12C.GL_TEXTURE_BINDING_3D);
                 GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, glowOn ? ColoredLight.glowTexture() : 0);
                 hueBound = true;
                 GlslPrograms.drawFullscreen();
@@ -355,6 +377,33 @@ public final class LightShafts {
                 GpuTimers.end("lumis_shafts_radial");
             }
 
+            // 1b. Temporal resolve (0.7.1): low + reprojected history -> history.current(), read by the composite.
+            RenderTargets.Target lightOut = low;
+            if (temporal) {
+                GpuTimers.begin("lumis_shafts_resolve");
+                GL11C.glDisable(GL11C.GL_SCISSOR_TEST);
+                GL11C.glDisable(GL11C.GL_BLEND);
+                RenderTargets.Target target = history.current();
+                target.bindWrite();
+                GL13C.glActiveTexture(GL13C.GL_TEXTURE13);
+                GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, low.texture());
+                GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
+                GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, history.previous().texture());
+                sceneBound = true;
+                Program p = resolve;
+                GL20C.glUseProgram(p.id());
+                GL20C.glUniform1i(p.u()[0], 13);
+                GL20C.glUniform1i(p.u()[1], 14);
+                GL20C.glUniform1i(p.u()[2], 12);
+                GL20C.glUniformMatrix4fv(p.u()[3], false, ctx.invViewProjection().get(stack.mallocFloat(16)));
+                GL20C.glUniform4i(p.u()[4], divisor, history.valid() ? 1 : 0, 0, 0);
+                ctx.bindReproject(resolveReproject, stack);
+                GlslPrograms.drawFullscreen();
+                lightOut = target;
+                history.swap();
+                GpuTimers.end("lumis_shafts_resolve");
+            }
+
             // 2. Composite into the scene colour (its depth stays sampleable: this framebuffer has no depth).
             GpuTimers.begin("lumis_shafts_composite");
             if (RenderTargets.bindColorOnly(scene)) {
@@ -364,7 +413,7 @@ public final class LightShafts {
                     GL11C.glScissor(boxX, boxY, boxW, boxH);
                 }
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE13);
-                GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, low.texture());
+                GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, lightOut.texture());
                 Program p = composite;
                 GL20C.glUseProgram(p.id());
                 GL20C.glUniform1i(p.u()[0], 13);
@@ -394,7 +443,8 @@ public final class LightShafts {
             if (hueBound) {
                 hueBound = false;
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
-                GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, hueSaved);
+                // Put back what the LOD binding keeps there (0.6.8: known, not queried).
+                GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, ColoredLight.lodUnit14Texture());
             }
             GL13C.glActiveTexture(GL13C.GL_TEXTURE13);
             GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
@@ -408,12 +458,17 @@ public final class LightShafts {
         String header = GlslPrograms.header460();
         march = Program.of("Lumis shaft march", header + ShaftGlsl.MARCH,
                 "u_Depth", "lumis_Horizon", "u_InvViewProj", "u_Info", "u_Light", "u_Medium", "u_Shape",
-                "u_Phase", "u_TintLow", "u_TintHigh", "u_Cookie", "u_CookieOff", "u_Glow", "u_Hue");
+                "u_Phase", "u_TintLow", "u_TintHigh", "u_Cookie", "u_CookieOff", "u_Glow", "u_Hue", "u_Temporal");
         rayMask = Program.of("Lumis sun-ray mask", header + ShaftGlsl.RAY_MASK, "u_Info", "u_SunPos", "u_Ray");
         rayBlur = Program.of("Lumis sun-ray blur", header + ShaftGlsl.RAY_BLUR, "u_Info", "u_SunPos", "u_Step", "u_Light");
         composite = Program.of("Lumis shaft composite", header + ShaftGlsl.COMPOSITE, "u_Low", "u_Depth", "u_Info", "u_Mix",
                 "u_Scene", "u_Tone");
-        if (march == null || rayMask == null || rayBlur == null || composite == null) {
+        resolve = Program.of("Lumis shaft resolve", header + ShaftGlsl.RESOLVE, "u_Cur", "u_Hist", "u_Depth",
+                "u_InvViewProj", "u_Info");
+        if (resolve != null) {
+            resolveReproject = com.solarbiscuit.atmosphera.lib.gpu.PostPasses.locateReproject(resolve.id());
+        }
+        if (march == null || rayMask == null || rayBlur == null || composite == null || resolve == null) {
             failed = true;
             Lumis.LOGGER.error("Light shafts are off: a shader did not compile (see above).");
             return false;
@@ -422,6 +477,10 @@ public final class LightShafts {
     }
 
     private static void release() {
+        if (history != null) {
+            history.release();
+            history = null;
+        }
         if (low != null) {
             low.release();
             low = null;
@@ -436,7 +495,6 @@ public final class LightShafts {
     private static boolean sceneBound;
     /** Share of a pixel's headroom (1 - colour) the shafts may fill at most (0.6.4 soft add). */
     private static final float TONE_HEADROOM = 0.6f;
-    private static int hueSaved;
 
     private static float lerp(float a, float b, float t) {
         return a + (b - a) * t;

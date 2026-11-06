@@ -1,6 +1,7 @@
 package com.solarbiscuit.atmosphera.lumis.shadow;
 
 import com.solarbiscuit.atmosphera.lib.gpu.GlslPrograms;
+import com.solarbiscuit.atmosphera.lib.world.ColumnField;
 import com.solarbiscuit.atmosphera.lib.gpu.GpuResources;
 import com.solarbiscuit.atmosphera.lib.gpu.GpuTimers;
 import com.solarbiscuit.atmosphera.lumis.Lumis;
@@ -90,6 +91,9 @@ public final class HorizonMap {
 
     /** Parameters of the last build; shaders and CPU marches must use these, not the current sun. */
     static boolean valid;
+    /** Column-field uploads and generation the map was last built from (lib 0.5.0). */
+    private static long seenUploads = -1;
+    private static int fieldGeneration = -1;
     static int centreX;
     static int centreZ;
     static float dirX;
@@ -127,7 +131,7 @@ public final class HorizonMap {
      * rate cap for sun motion (window moves and the first build are immediate).
      */
     static void update(float sunX, float sunY, float sunZ, long minIntervalNs) {
-        if (!Heightfield.ready()) {
+        if (!ColumnField.ready()) {
             valid = false;
             return;
         }
@@ -136,14 +140,15 @@ public final class HorizonMap {
         float elev = (float) Math.atan2(sunY, horizontal);
         float dx = horizontal > 1e-4f ? sunX / horizontal : 1f;
         float dz = horizontal > 1e-4f ? sunZ / horizontal : 0f;
-        int cx = Heightfield.centreChunkX << 4;
-        int cz = Heightfield.centreChunkZ << 4;
+        int cx = ColumnField.centreChunkX() << 4;
+        int cz = ColumnField.centreChunkZ() << 4;
         // sunY / horizontal, not tan(atan2(...)): at noon the float angle rounds past pi/2 and tan() turns negative.
         float tanElevation = Math.max(1e-3f, Math.min(1e4f, sunY / Math.max(horizontal, 1e-4f)));
         tanNow = tanElevation;
         sameDirection = dx * dirX + dz * dirZ > 0.9999f;
 
-        boolean rebuild = !valid || size != Heightfield.n || cx != centreX || cz != centreZ;
+        boolean rebuild = !valid || size != ColumnField.size() || cx != centreX || cz != centreZ
+                || fieldGeneration != ColumnField.generation();
         if (!rebuild) {
             long since = now - builtAt;
             // Shadow ends move by h * dθ / sin²θ: keep that near 0.1 block for 24-block casters.
@@ -151,7 +156,7 @@ public final class HorizonMap {
             double threshold = Math.max(1e-5, Math.min(0.004, 0.1 * sin * sin / 24.0));
             boolean sunMoved = Math.abs(elev - elevation) > threshold || dx * dirX + dz * dirZ < 0.9999f;
             rebuild = sunMoved && since >= minIntervalNs
-                    || Heightfield.uploadedSinceRead && since >= 250_000_000L;
+                    || ColumnField.uploadCount() != seenUploads && since >= 250_000_000L;
         }
         if (!rebuild) {
             return;
@@ -160,7 +165,8 @@ public final class HorizonMap {
             valid = false;
             return;
         }
-        Heightfield.uploadedSinceRead = false;
+        seenUploads = ColumnField.uploadCount();
+        fieldGeneration = ColumnField.generation();
         sameDirection = true;
         elevation = elev;
         builtAt = now;
@@ -183,7 +189,7 @@ public final class HorizonMap {
         if (program == 0) {
             return false;
         }
-        int n = Heightfield.n;
+        int n = ColumnField.size();
         if (size != n) {
             release();
             texA = target("Lumis horizon A", n);
@@ -222,14 +228,14 @@ public final class HorizonMap {
         GL20C.glUseProgram(program);
         GL20C.glUniform1i(uSrc, 14);
         GL20C.glUniform4i(uWin, cx & (n - 1), cz & (n - 1), n, n / 2);
-        GL20C.glUniform4f(uSun, dx, dz, tanElevation, Heightfield.minY);
+        GL20C.glUniform4f(uSun, dx, dz, tanElevation, ColumnField.minY());
         GL11C.glViewport(0, 0, n, n);
         GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
         GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
         GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
 
         // S_0 from the heightfield into A, then A->B, B->A, ... ending in B.
-        pass(fboA, Heightfield.texture(), 0);
+        pass(fboA, ColumnField.texture(), 0);
         for (int k = 1; k <= PASSES; k++) {
             boolean intoB = (k & 1) == 1;
             pass(intoB ? fboB : fboA, intoB ? texA : texB, 1 << (k - 1));

@@ -34,10 +34,12 @@ public final class SunModel {
 
     public static void update(ClientLevel level, float partial) {
         DimensionProfiles.Profile profile = DimensionProfiles.get(level);
-        float angle = level.getSunAngle(partial);
-        // Vanilla sun path: rises in the east (+x), crosses overhead, sets in the west.
-        float sx = -Mth.sin(angle);
-        float sy = Mth.cos(angle);
+        // Lumis 0.7.0: the lib's sun source (audit BUG-08): Nuit's drawn sun when a skybox rotates it, else vanilla's
+        // path (rises in the east, +x). Brightness and the sun/moon switch below still follow game time.
+        com.solarbiscuit.atmosphera.lib.world.SunSource.update(level, partial);
+        float sx = com.solarbiscuit.atmosphera.lib.world.SunSource.dirX();
+        float sy = com.solarbiscuit.atmosphera.lib.world.SunSource.dirY();
+        float sz = com.solarbiscuit.atmosphera.lib.world.SunSource.dirZ();
         sunHeight = sy;
         float rain = level.getRainLevel(partial);
         float thunder = level.getThunderLevel(partial);
@@ -47,13 +49,14 @@ public final class SunModel {
         if (sy >= 0f) {
             dirX = sx;
             dirY = sy;
+            dirZ = sz;
             light = smoothstep(SIN_2, SIN_8, sy);
         } else {
             dirX = -sx;
             dirY = -sy;
+            dirZ = -sz;
             light = smoothstep(SIN_2, SIN_8, -sy) * LumisConfig.moon.get().floatValue();
         }
-        dirZ = 0f;
         strength = profile.sun() ? light * weather : 0f;
 
         // Golden hour near the horizon, night below it; morning when the sun is in the east.

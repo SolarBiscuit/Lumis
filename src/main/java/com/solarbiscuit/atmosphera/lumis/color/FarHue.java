@@ -440,14 +440,8 @@ final class FarHue {
         } else {
             upload.put(rgba).flip();
         }
-        int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
-        GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
-        int previous = GL11C.glGetInteger(GL12C.GL_TEXTURE_BINDING_3D);
-        GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, texture);
-        GL12C.glTexSubImage3D(GL12C.GL_TEXTURE_3D, 0, x * BRICK, y * BRICK, z * BRICK, BRICK, BRICK, BRICK, GL11C.GL_RGBA,
-                GL11C.GL_UNSIGNED_BYTE, upload);
-        GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, previous);
-        GL13C.glActiveTexture(previousUnit);
+        com.solarbiscuit.atmosphera.lib.gpu.AtmosGl.texSubImage3D(14, texture, x * BRICK, y * BRICK, z * BRICK, BRICK,
+                BRICK, BRICK, GL11C.GL_RGBA, GL11C.GL_UNSIGNED_BYTE, upload);
     }
 
     static String describe() {

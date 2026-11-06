@@ -45,6 +45,7 @@ final class ShaftGlsl {
             uniform vec4 u_Cookie;  // x: strength (0 off), y: layer height minus camera y, z: 1 / cell size
             uniform vec4 u_CookieOff; // xy: wind drift of the layer, in blocks, mod 4096
             uniform vec4 u_Glow;    // x: block glow gain (0 off), y: glow reach (blocks from the camera)
+            uniform vec4 u_Temporal; // x: this frame's jitter offset (0 without temporal accumulation)
             out vec4 o_Out;
             """ + COMMON + ShadowGlsl.VIS_POINT + """
             float lumis_hg(float c, float g) {
@@ -122,7 +123,9 @@ final class ShaftGlsl {
                 bool sunOn = u_Info.w != 0;
                 bool cookie = u_Cookie.x > 0.0;
                 bool glow = u_Glow.x > 0.0;
-                float jitter = lumis_ign(gl_FragCoord.xy);
+                // 0.7.1: with temporal accumulation the offset moves every frame (golden-ratio sequence), so the
+                // history averages different sample positions: more effective steps than are marched per frame.
+                float jitter = fract(lumis_ign(gl_FragCoord.xy) + u_Temporal.x);
                 // Steps follow the ray length (0.6.7): the steps are energy-conserving, so the count no longer changes
                 // brightness, and a ray that ends at a wall a few blocks away does not need the full count. sqrt keeps
                 // mid-length rays near it; sky pixels (len = limit) keep all of them.
@@ -188,6 +191,52 @@ final class ShaftGlsl {
                     // Debug: in-scattered light x10, ignoring colour and phase; plus the raw block glow.
                     o_Out = vec4(vec3(inscatter * 10.0) + glowLight, 1.0);
                 }
+            }
+            """;
+
+    /**
+     * Temporal resolve (0.7.1, lib 0.6.0 reprojection): this frame's low-resolution light blended with last frame's,
+     * reprojected for camera motion (Minecraft has no motion vectors; moving entities are clamped). History is
+     * clamped to the 3x3 neighbourhood of the current frame, light and transmittance alike (audit R12), so it never
+     * holds a beam where there is none now; alpha 0.25. History is ignored after a cut (lib: not continuous).
+     */
+    static final String RESOLVE = """
+            uniform sampler2D u_Cur;
+            uniform sampler2D u_Hist;
+            uniform sampler2D u_Depth;
+            uniform mat4 u_InvViewProj;
+            uniform ivec4 u_Info;   // x: divisor, y: 1 = history valid
+            out vec4 o_Out;
+            """ + COMMON + com.solarbiscuit.atmosphera.lib.gpu.PostPasses.REPROJECT_GLSL + """
+            void main() {
+                ivec2 px = ivec2(gl_FragCoord.xy);
+                ivec2 lowSize = textureSize(u_Cur, 0);
+                vec4 cur = texelFetch(u_Cur, px, 0);
+                if (u_Info.y == 0 || atmos_CameraDelta.w < 0.5) {
+                    o_Out = cur;
+                    return;
+                }
+                vec4 lo = cur;
+                vec4 hi = cur;
+                for (int j = -1; j <= 1; j++) {
+                    for (int i = -1; i <= 1; i++) {
+                        vec4 s = texelFetch(u_Cur, clamp(px + ivec2(i, j), ivec2(0), lowSize - 1), 0);
+                        lo = min(lo, s);
+                        hi = max(hi, s);
+                    }
+                }
+                ivec2 size = textureSize(u_Depth, 0);
+                ivec2 fpx = min(px * u_Info.x + u_Info.x / 2, size - 1);
+                float depth;
+                vec3 rel = lumis_rel(u_Depth, u_InvViewProj, fpx, size, depth);
+                float sky = depth >= 1.0 ? 1.0 : 0.0;
+                vec2 uv = atmos_reproject(sky > 0.5 ? normalize(rel) : rel, sky);
+                if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+                    o_Out = cur;
+                    return;
+                }
+                vec4 hist = clamp(textureLod(u_Hist, uv, 0.0), lo, hi);
+                o_Out = mix(hist, cur, 0.25);
             }
             """;
 
