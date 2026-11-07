@@ -28,3 +28,7 @@
 !/LICENSE.*
 !/*NOTICE*
 !/README.md
+
+# README art (banner, icons, measured-cost chart)
+!/docs/logo/**
+!/docs/img/**
