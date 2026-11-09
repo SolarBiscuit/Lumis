@@ -14,7 +14,7 @@ import java.lang.invoke.MethodType;
  * from the skybox layer textures. Through reflection, so Lumis keeps no dependency on Nuit; 0 without Nuit, with an
  * older Nuit, or when the sky has no cover data. Smoothed over about 0.3 s. Render thread.
  */
-final class SkyCover {
+public final class SkyCover {
     private static final float SMOOTH_SECONDS = 0.3f;
 
     private static boolean probed;
@@ -29,7 +29,7 @@ final class SkyCover {
     }
 
     /** The smoothed cover for this frame. */
-    static float get() {
+    public static float get() {
         return value;
     }
 

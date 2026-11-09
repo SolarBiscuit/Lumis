@@ -70,6 +70,10 @@ public final class ColoredLight {
                 .switchedBy(LumisConfig.coloredLight)
                 .register();
         TerrainSamplers.register(feature, "lumis_Hue", GL12C.GL_TEXTURE_3D, HueVolume::texture);
+        // 0.8.1: the darkness of dark light (0 until a black lantern is seen; an unset sampler reads 0).
+        // A requested unit (16 and up): register() holds only two samplers, lumis_Horizon and lumis_Hue.
+        TerrainSamplers.request(feature, "lumis_HueDim", GL12C.GL_TEXTURE_3D, TerrainSamplers.Stage.FRAGMENT, 50,
+                HueVolume::dimTexture);
         // All passes: solid, cutout and translucent (water, glass, ice).
         int all = ShaderSnippets.PASS_ALL;
         ShaderSnippets.register(feature, ShaderHook.VERT_DECL, all, 25, HueGlsl.VERT_DECL);
@@ -97,11 +101,11 @@ public final class ColoredLight {
             });
         }
 
-        FrameUniforms.vec4("lumis_HueFar", "x: 1 / far volume width (blocks), y: 1 / its height, z: 1 while it runs", out -> {
+        FrameUniforms.vec4("lumis_HueFar", "x: 1 / far volume width (blocks), y: 1 / its height, z: 1 while it runs, w: dark light strength (0.8.1)", out -> {
             out[0] = 1f / (FarHue.CELL * FarHue.NXZ);
             out[1] = 1f / (FarHue.CELL * FarHue.NY);
             out[2] = running && FarHue.allocated() ? 1f : 0f;
-            out[3] = 0f;
+            out[3] = LumisConfig.colorDark.get().floatValue();
         });
         FarHue.register();
         com.solarbiscuit.atmosphera.lib.compat.voxy.VoxyBridge.addBeforeLodDraw(ColoredLight::bindForLods);
@@ -119,6 +123,11 @@ public final class ColoredLight {
     /** The light colour volume (3D texture), for the shaft march. */
     public static int glowTexture() {
         return HueVolume.texture();
+    }
+
+    /** The darkness volume of dark light (3D, R8; 0 while none has been seen), for the shaft march (0.8.1). */
+    public static int glowDimTexture() {
+        return HueVolume.dimTexture();
     }
 
     /** How far from the camera the volume reaches with full colour, in blocks. */
@@ -244,6 +253,7 @@ public final class ColoredLight {
         float accW = 0f;
         float cover = 0f;
         float staticLevel = 0f;
+        float darkW = 0f;
         if (HueVolume.sample(x, y, z, SAMPLE)) {
             float c = smooth(0.02f, 0.4f, SAMPLE[2]);
             float w = c * SAMPLE[3];
@@ -252,6 +262,7 @@ public final class ColoredLight {
             accW += w;
             cover = c;
             staticLevel = SAMPLE[3];
+            darkW += HueVolume.sampledDim * w;
         }
         float dynamicLevel = 0f;
         for (int i = 0; i < DynamicHue.count; i++) {
@@ -266,6 +277,9 @@ public final class ColoredLight {
             acc0 += EmitterColors.co(DynamicHue.CHROMA[i]) * w;
             acc1 += EmitterColors.cg(DynamicHue.CHROMA[i]) * w;
             accW += w;
+            if (EmitterColors.isDark(DynamicHue.CHROMA[i])) {
+                darkW += w;
+            }
             cover = Math.max(cover, Math.min(1f, pred));
             dynamicLevel = Math.max(dynamicLevel, pred);
         }
@@ -291,9 +305,11 @@ public final class ColoredLight {
         TINT[1] = Math.max(0f, 1f + cg);
         TINT[2] = Math.max(0f, tmp - co);
         float l = Math.max(0.05f, 0.2126f * TINT[0] + 0.7152f * TINT[1] + 0.0722f * TINT[2]);
-        float r = 1f + (TINT[0] / l - 1f) * k;
-        float g = 1f + (TINT[1] / l - 1f) * k;
-        float b = 1f + (TINT[2] / l - 1f) * k;
+        // Dark light (0.8.1) dims what it falls on, by its share of the light here.
+        float dim = 1f - Math.min(1f, darkW / accW) * LumisConfig.colorDark.get().floatValue() * k;
+        float r = (1f + (TINT[0] / l - 1f) * k) * dim;
+        float g = (1f + (TINT[1] / l - 1f) * k) * dim;
+        float b = (1f + (TINT[2] / l - 1f) * k) * dim;
         if (Math.abs(r - 1f) + Math.abs(g - 1f) + Math.abs(b - 1f) < 0.03f) {
             return buffers;
         }

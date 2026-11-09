@@ -47,7 +47,9 @@ import org.lwjgl.system.MemoryStack;
  *       it, so leaves and ridges in front of the sun cast streaks; in AUTO also layered over the march (sun rays);</li>
  *   <li>a full-resolution composite with a depth-aware upsample: {@code scene * transmittance + light * (1 - scene)}.</li>
  * </ol>
- * Off underwater, in lava or powder snow, while blind, under Fabulous graphics, in caves (eye sky light) and where
+ * Under water (0.7.2) the march switches to water: uniform scattering, depth colour and moving caustics from the
+ * surface (see {@code ShaftGlsl.MARCH}); no screen rays, cookie or block glow there. Off in lava or powder snow, while
+ * blind, under Fabulous graphics, in caves (eye sky light; under water, the sky light at the surface above) and where
  * the dimension has no sun. Render thread.
  */
 public final class LightShafts {
@@ -123,6 +125,15 @@ public final class LightShafts {
     private static boolean warnedFabulous;
     /** Smoothed sky light at the eye, 0..1: no haze in caves or houses. */
     private static float eyeSky = 1f;
+    /** Under water (0.7.2): smoothed sky light at the surface above the camera, and that surface (world y). */
+    private static float surfaceSky = 1f;
+    private static double surfaceY;
+    private static boolean wasUnderwater;
+    /** Scattering per block under water (tuned in tools/lumis_underwater_scene.txt). */
+    private static final float WATER_SCATTER = 0.045f;
+    /** Absorption per block without Torrente (Torrente's fallback style). */
+    private static final float[] WATER_ABSORB = {0.25f, 0.09f, 0.06f};
+    private static final float WATER_CAUSTICS = 1.0f;
     private static long lastNanos;
 
     private LightShafts() {
@@ -157,6 +168,20 @@ public final class LightShafts {
         BlockPos eye = EYE.set(Mth.floor(camera.x), Mth.floor(camera.y), Mth.floor(camera.z));
         float target = level.getBrightness(LightLayer.SKY, eye) / 15f;
         eyeSky += (target - eyeSky) * Math.min(1f, dt * 1.5f);
+        if (mc.gameRenderer.getMainCamera().getFluidInCamera() == FogType.WATER) {
+            // Under water the eye's sky light falls by one per block of water, which the march's absorption already
+            // covers: gate by the sky light just above the water column instead (0 in a flooded cave).
+            int top = eye.getY();
+            int limit = Math.min(level.getMaxBuildHeight(), top + 64);
+            while (top < limit && level.getFluidState(EYE.setY(top)).is(net.minecraft.tags.FluidTags.WATER)) {
+                top++;
+            }
+            surfaceY = top - 0.11;
+            float above = level.getBrightness(LightLayer.SKY, EYE.setY(top)) / 15f;
+            surfaceSky += (above - surfaceSky) * Math.min(1f, dt * 1.5f);
+        } else {
+            surfaceSky = eyeSky;
+        }
         // The sky cookie drifts with the wind; kept modulo its 4096-block repeat.
         Wind.global(level, 0f, WIND);
         float speed = COOKIE_DRIFT * (0.3f + WIND.strength);
@@ -179,16 +204,24 @@ public final class LightShafts {
             return;
         }
         Camera camera = mc.gameRenderer.getMainCamera();
-        if (camera.getFluidInCamera() != FogType.NONE || mc.player != null
+        FogType fluid = camera.getFluidInCamera();
+        boolean underwater = fluid == FogType.WATER;
+        if (fluid != FogType.NONE && !underwater || mc.player != null
                 && (mc.player.hasEffect(MobEffects.BLINDNESS) || mc.player.hasEffect(MobEffects.DARKNESS))) {
             return;
         }
-        float light = SunModel.strength * LumisConfig.shaftStrength.get().floatValue() * eyeSky * eyeSky;
+        boolean marchPossible = LumisConfig.shaftMode.get() == Mode.AUTO && SunShadows.ready();
+        float waterOption = LumisConfig.shaftUnderwater.get().floatValue();
+        if (underwater && (!marchPossible || waterOption <= 0f)) {
+            return;
+        }
+        float light = underwater
+                ? SunModel.strength * LumisConfig.shaftStrength.get().floatValue() * waterOption * surfaceSky * surfaceSky
+                : SunModel.strength * LumisConfig.shaftStrength.get().floatValue() * eyeSky * eyeSky;
         boolean sunOn = light > 0.003f;
         // Block glow (0.6.0) needs the march (AUTO with sun shadows) and coloured light holding colour somewhere.
         float glowOption = LumisConfig.shaftBlockGlow.get().floatValue();
-        boolean marchPossible = LumisConfig.shaftMode.get() == Mode.AUTO && SunShadows.ready();
-        boolean glowOn = glowOption > 0f && marchPossible && ColoredLight.glowAvailable();
+        boolean glowOn = !underwater && glowOption > 0f && marchPossible && ColoredLight.glowAvailable();
         if (!sunOn && !glowOn) {
             return;
         }
@@ -213,7 +246,7 @@ public final class LightShafts {
 
         // Screen rays only reach so far from the sun: they run inside a box around it (and only when the sun is in
         // front of the camera). RADIAL mode needs them; AUTO adds them over the march when sun rays are on.
-        boolean rays = sunOn && (!volumetric || LumisConfig.shaftSunRays.get() && debug == 0);
+        boolean rays = !underwater && sunOn && (!volumetric || LumisConfig.shaftSunRays.get() && debug == 0);
         int boxX = 0;
         int boxY = 0;
         int boxW = 0;
@@ -256,7 +289,8 @@ public final class LightShafts {
             }
             if (!history.ensure(scene)) {
                 temporal = false;
-            } else if (!ctx.continuous()) {
+            } else if (!ctx.continuous() || underwater != wasUnderwater) {
+                // Also across the water surface: air and water light must not blend.
                 history.invalidate();
             }
         } else if (history != null) {
@@ -270,6 +304,7 @@ public final class LightShafts {
             }
         }
 
+        wasUnderwater = underwater;
         float golden = 1f - smoothstep(0.08f, 0.5f, Math.abs(SunModel.sunHeight));
         float rain = level.getRainLevel(ctx.partialTick());
         // 0.6.6: a sun (or moon) inside the skybox's own clouds (Nuit 1.0.1+ reports how much) gives weaker light in
@@ -303,8 +338,14 @@ public final class LightShafts {
                 GL20C.glUniform4f(p.u()[14], temporal ? (temporalFrame * 0.618034f) % 1f : 0f, 0f, 0f, 0f);
                 GL20C.glUniform4f(p.u()[4], r, g, b, 0f);
                 float mist = LumisConfig.shaftMist.get().floatValue();
-                float density = 0.0035f * (0.5f + mist) * (1f + 2f * golden) * (1f + 2f * rain);
+                float density = underwater ? WATER_SCATTER
+                        : 0.0035f * (0.5f + mist) * (1f + 2f * golden) * (1f + 2f * rain);
                 float limit = Math.min(LumisConfig.shaftDistance.get(), SunShadows.windowRadius() - 16);
+                if (underwater) {
+                    // As far as one sees under water (vanilla's water fog grows with time spent under water).
+                    limit = Math.min(limit, Math.max(16f, Math.min(64f,
+                            com.mojang.blaze3d.systems.RenderSystem.getShaderFogEnd())));
+                }
                 GL20C.glUniform4f(p.u()[5], density, 32f, level.getSeaLevel(), Math.max(16f, limit));
                 float contrast = LumisConfig.shaftContrast.get().floatValue();
                 // Gain: beams through shade come out somewhat brighter than before, the open glow dimmer.
@@ -318,7 +359,7 @@ public final class LightShafts {
                 float tintAmount = LumisConfig.shaftHeightTint.get().floatValue();
                 setTint(p.u()[8], lerp(0.97f, 0.90f, golden), lerp(0.92f, 0.78f, golden), tintAmount, 1f / 96f);
                 setTint(p.u()[9], 0.98f, 1.07f, tintAmount, 0f, 0.93f);
-                float cookie = LumisConfig.shaftSkyCookie.get().floatValue();
+                float cookie = underwater ? 0f : LumisConfig.shaftSkyCookie.get().floatValue();
                 GL20C.glUniform4f(p.u()[10], cookie, (float) (COOKIE_HEIGHT - ctx.camera().y), 1f / COOKIE_CELL, 0f);
                 GL20C.glUniform4f(p.u()[11], (float) cookieX, (float) cookieZ, 0f, 0f);
                 // Block glow: mostly a night effect (sunlight swamps it by day).
@@ -328,6 +369,20 @@ public final class LightShafts {
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
                 GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, glowOn ? ColoredLight.glowTexture() : 0);
                 hueBound = true;
+                // Under water (0.7.2): the surface above the camera, caustics, absorption, and the column field on
+                // unit 15 (2D; Lumis keeps its LOD colour volume on that unit's 3D target, which this leaves alone).
+                GL20C.glUniform4f(p.u()[15], underwater ? 1f : 0f, (float) (surfaceY - ctx.camera().y), WATER_CAUSTICS, 0f);
+                GL20C.glUniform4f(p.u()[16], WATER_ABSORB[0], WATER_ABSORB[1], WATER_ABSORB[2], 0f);
+                GL20C.glUniform1i(p.u()[17], 15);
+                // 0.8.1: darkness of dark light on unit 11 (3D target; Minecraft binds only 2D textures there).
+                GL20C.glUniform1i(p.u()[18], 11);
+                GL13C.glActiveTexture(GL13C.GL_TEXTURE11);
+                GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, glowOn ? ColoredLight.glowDimTexture() : 0);
+                dimBound = true;
+                GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
+                GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, underwater && com.solarbiscuit.atmosphera.lib.world.ColumnField.ready()
+                        ? com.solarbiscuit.atmosphera.lib.world.ColumnField.texture() : 0);
+                columnBound = true;
                 GlslPrograms.drawFullscreen();
                 GpuTimers.end("lumis_shafts_march");
             }
@@ -419,8 +474,9 @@ public final class LightShafts {
                 GL20C.glUniform1i(p.u()[0], 13);
                 GL20C.glUniform1i(p.u()[1], 12);
                 GL20C.glUniform4i(p.u()[2], divisor, 0, 0, 0);
-                GL20C.glUniform4f(p.u()[3], volumetric && sunOn ? LumisConfig.shaftMist.get().floatValue() : 0f,
-                        debug > 0 ? 1f : 0f, eyeSky * eyeSky, 0f);
+                // Under water the scene is not dimmed or hazed (vanilla's water fog does that): light is only added.
+                GL20C.glUniform4f(p.u()[3], volumetric && sunOn && !underwater ? LumisConfig.shaftMist.get().floatValue() : 0f,
+                        debug > 0 ? 1f : 0f, underwater ? 0f : eyeSky * eyeSky, 0f);
                 // The scene colour this pass writes, read back per pixel (0.6.4): unit 14, after a texture barrier so
                 // the reads see everything drawn so far. Each pixel reads only its own texel, which GL 4.5 allows.
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
@@ -440,6 +496,16 @@ public final class LightShafts {
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
                 GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
             }
+            if (dimBound) {
+                dimBound = false;
+                GL13C.glActiveTexture(GL13C.GL_TEXTURE11);
+                GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, 0);
+            }
+            if (columnBound) {
+                columnBound = false;
+                GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
+                GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
+            }
             if (hueBound) {
                 hueBound = false;
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
@@ -456,9 +522,12 @@ public final class LightShafts {
 
     private static boolean compile() {
         String header = GlslPrograms.header460();
-        march = Program.of("Lumis shaft march", header + ShaftGlsl.MARCH,
+        // Torrente's water style slots are in the frame block when Torrente is installed (0.7.2).
+        String water = FrameUniforms.glslBlock().contains("torrente_Absorb") ? "#define LUMIS_TORRENTE\n" : "";
+        march = Program.of("Lumis shaft march", header + water + ShaftGlsl.MARCH,
                 "u_Depth", "lumis_Horizon", "u_InvViewProj", "u_Info", "u_Light", "u_Medium", "u_Shape",
-                "u_Phase", "u_TintLow", "u_TintHigh", "u_Cookie", "u_CookieOff", "u_Glow", "u_Hue", "u_Temporal");
+                "u_Phase", "u_TintLow", "u_TintHigh", "u_Cookie", "u_CookieOff", "u_Glow", "u_Hue", "u_Temporal",
+                "u_Water", "u_Absorb", "atmos_ColumnField", "u_HueDim");
         rayMask = Program.of("Lumis sun-ray mask", header + ShaftGlsl.RAY_MASK, "u_Info", "u_SunPos", "u_Ray");
         rayBlur = Program.of("Lumis sun-ray blur", header + ShaftGlsl.RAY_BLUR, "u_Info", "u_SunPos", "u_Step", "u_Light");
         composite = Program.of("Lumis shaft composite", header + ShaftGlsl.COMPOSITE, "u_Low", "u_Depth", "u_Info", "u_Mix",
@@ -492,6 +561,8 @@ public final class LightShafts {
     }
 
     private static boolean hueBound;
+    private static boolean columnBound;
+    private static boolean dimBound;
     private static boolean sceneBound;
     /** Share of a pixel's headroom (1 - colour) the shafts may fill at most (0.6.4 soft add). */
     private static final float TONE_HEADROOM = 0.6f;

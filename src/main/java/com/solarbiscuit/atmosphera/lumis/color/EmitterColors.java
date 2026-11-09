@@ -243,12 +243,24 @@ public final class EmitterColors {
         return cached - 1;
     }
 
+    /**
+     * Dark light (0.8.1): a reserved packed chroma (Co = Cg = -128, which {@link #pack} never produces: its chroma is
+     * capped below 1, so at most 63 in size) for emitters whose light darkens instead of colouring: Additional
+     * Lanterns' black lanterns. Their chroma reads as neutral everywhere ({@link #co}, {@link #cg}); the colour volume
+     * and the dynamic lights keep their darkness apart.
+     */
+    public static final int DARK = 0x8080;
+
+    public static boolean isDark(int packed) {
+        return (packed & 0xFFFF) == DARK;
+    }
+
     public static float co(int packed) {
-        return (byte) (packed >>> 8) / 63f;
+        return isDark(packed) ? 0f : (byte) (packed >>> 8) / 63f;
     }
 
     public static float cg(int packed) {
-        return (byte) packed / 63f;
+        return isDark(packed) ? 0f : (byte) packed / 63f;
     }
 
     /** The tint of a packed chroma at luminance 1 (inverse of {@link #pack}), into {@code out}. */
@@ -275,7 +287,7 @@ public final class EmitterColors {
             t = new Tint(NEUTRAL, "error");
         }
         lastSource = t.source();
-        return pack(t.rgb());
+        return "dark".equals(t.source()) ? DARK : pack(t.rgb());
     }
 
     private static Tint rule(BlockState state) {
@@ -285,6 +297,11 @@ public final class EmitterColors {
         }
         ResourceLocation key = BuiltInRegistries.BLOCK.getKey(state.getBlock());
         String path = key.getPath();
+        // 0.8.1: Additional Lanterns' black lanterns give dark light (a whole "black" word, so the plain blackstone
+        // lantern is not one; a black-dyed blackstone lantern is).
+        if ("additionallanterns".equals(key.getNamespace()) && hasWord(path, "black") && hasWord(path, "lantern")) {
+            return new Tint(NEUTRAL, "dark");
+        }
         if ("minecraft".equals(key.getNamespace())) {
             float[] v = VANILLA.get(path);
             if (v != null) {
@@ -525,6 +542,15 @@ public final class EmitterColors {
         }
         float[] c = sum[best];
         return normalise(rgb(c[0] / weight[best], c[1] / weight[best], c[2] / weight[best]));
+    }
+
+    private static boolean hasWord(String path, String word) {
+        for (String token : path.split("_")) {
+            if (token.equals(word)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static float[] normalise(float[] c) {

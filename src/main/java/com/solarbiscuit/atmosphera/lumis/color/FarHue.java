@@ -384,8 +384,9 @@ final class FarHue {
                 int ez = e[i + 2] - oz;
                 int word = e[i + 3];
                 int level = word >>> 16 & 15;
-                float c0 = (byte) (word >>> 8) / 63f;
-                float c1 = (byte) word / 63f;
+                // Dark light (0.8.1) reads as neutral far away (the far volume keeps no darkness).
+                float c0 = EmitterColors.co(word);
+                float c1 = EmitterColors.cg(word);
                 for (int z = Math.max(0, Math.floorDiv(ez - level, CELL)); z <= Math.min(BRICK - 1, Math.floorDiv(ez + level, CELL)); z++) {
                     for (int y = Math.max(0, Math.floorDiv(ey - level, CELL)); y <= Math.min(BRICK - 1, Math.floorDiv(ey + level, CELL)); y++) {
                         for (int x = Math.max(0, Math.floorDiv(ex - level, CELL)); x <= Math.min(BRICK - 1, Math.floorDiv(ex + level, CELL)); x++) {

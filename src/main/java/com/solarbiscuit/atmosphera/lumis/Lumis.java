@@ -36,6 +36,8 @@ public final class Lumis {
         SunShadows.register();
         LightShafts.register();
         com.solarbiscuit.atmosphera.lumis.color.ColoredLight.register();
+        com.solarbiscuit.atmosphera.lumis.weather.WetSheen.register();
+        com.solarbiscuit.atmosphera.lumis.post.LensEffects.register();
         MinecraftForge.EVENT_BUS.addListener(EventPriority.LOW, Lumis::onRenderTick);
         MinecraftForge.EVENT_BUS.addListener((GameShuttingDownEvent e) -> stopping = true);
     }
@@ -54,5 +56,6 @@ public final class Lumis {
         SunShadows.update(mc);
         LightShafts.update(mc);
         com.solarbiscuit.atmosphera.lumis.color.ColoredLight.update(mc);
+        com.solarbiscuit.atmosphera.lumis.weather.WetSheen.update(mc);
     }
 }

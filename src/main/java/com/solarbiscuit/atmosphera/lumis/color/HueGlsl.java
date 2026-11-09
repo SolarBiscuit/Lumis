@@ -30,8 +30,9 @@ final class HueGlsl {
 
     /** Shared by the Xenon fragment stage and the LOD fragment stage. */
     private static final String COMMON = """
-            // Adds one dynamic light (lumis_DynN) to the colour sums: acc = (Co*w, Cg*w, w).
-            void lumis_dyn(vec4 s, vec3 rel, inout vec3 acc, inout float cov) {
+            // Adds one dynamic light (lumis_DynN) to the colour sums: acc = (Co*w, Cg*w, w); dark lights (chroma bytes
+            // 128, 128: EmitterColors.DARK, 0.8.1) add no colour, only their weight to dark.
+            void lumis_dyn(vec4 s, vec3 rel, inout vec3 acc, inout float cov, inout float dark) {
                 if (s.w < 65536.0) {
                     return;
                 }
@@ -39,8 +40,9 @@ final class HueGlsl {
                 float rest = s.w - lum * 65536.0;
                 float co = floor(rest / 256.0);
                 float cg = rest - co * 256.0;
-                co = (co >= 128.0 ? co - 256.0 : co) / 63.0;
-                cg = (cg >= 128.0 ? cg - 256.0 : cg) / 63.0;
+                bool isDark = co == 128.0 && cg == 128.0;
+                co = isDark ? 0.0 : (co >= 128.0 ? co - 256.0 : co) / 63.0;
+                cg = isDark ? 0.0 : (cg >= 128.0 ? cg - 256.0 : cg) / 63.0;
                 float pred = lum * (1.0 - length(rel - s.xyz) / 7.75);
                 if (pred <= 0.0) {
                     return;
@@ -48,27 +50,38 @@ final class HueGlsl {
                 float w = pred;
                 acc += vec3(co * w, cg * w, w);
                 cov = max(cov, clamp(pred, 0.0, 1.0));
+                if (isDark) {
+                    dark += w;
+                }
             }
-            // Light colour at a camera-relative cell position: rgb tint (luminance 1) and how much of it applies.
+            // Light colour at a camera-relative cell position: rgb tint (luminance 1, lower where dark light reaches)
+            // and how much of it applies.
             vec4 lumis_lightTint(sampler3D volume, vec3 rel) {
                 vec3 acc = vec3(0.0);
                 float cov = 0.0;
+                float dark = 0.0;
                 vec2 half_ = 0.5 / lumis_HueMix.xy;
                 float fade = (1.0 - smoothstep(half_.x - 26.0, half_.x - 12.0, max(abs(rel.x), abs(rel.z))))
                         * (1.0 - smoothstep(half_.y - 26.0, half_.y - 12.0, abs(rel.y)));
                 if (fade > 0.0) {
-                    vec4 h = textureLod(volume, (rel + atmos_CameraPos.xyz) * lumis_HueMix.xyx, 0.0);
+                    vec3 lumisAt = (rel + atmos_CameraPos.xyz) * lumis_HueMix.xyx;
+                    vec4 h = textureLod(volume, lumisAt, 0.0);
                     if (h.b > 0.02) {
                         float c = smoothstep(0.02, 0.4, h.b) * fade;
                         float w = c * 15.0 * h.a / h.b;
                         acc += vec3((h.rg / h.b - 0.5) * 4.0 * w, w);
                         cov = c;
+                    #ifdef LUMIS_HUE_DIM
+                        if (lumis_HueFar.w > 0.0) {
+                            dark += w * clamp(textureLod(lumis_HueDim, lumisAt, 0.0).r / h.b, 0.0, 1.0);
+                        }
+                    #endif
                     }
                 }
-                lumis_dyn(lumis_Dyn0, rel, acc, cov);
-                lumis_dyn(lumis_Dyn1, rel, acc, cov);
-                lumis_dyn(lumis_Dyn2, rel, acc, cov);
-                lumis_dyn(lumis_Dyn3, rel, acc, cov);
+                lumis_dyn(lumis_Dyn0, rel, acc, cov, dark);
+                lumis_dyn(lumis_Dyn1, rel, acc, cov, dark);
+                lumis_dyn(lumis_Dyn2, rel, acc, cov, dark);
+                lumis_dyn(lumis_Dyn3, rel, acc, cov, dark);
                 if (acc.z <= 0.0) {
                     return vec4(1.0, 1.0, 1.0, 0.0);
                 }
@@ -76,6 +89,8 @@ final class HueGlsl {
                 float tmp = 1.0 - ch.y;
                 vec3 tint = max(vec3(tmp + ch.x, 1.0 + ch.y, tmp - ch.x), 0.0);
                 tint /= max(dot(tint, vec3(0.2126, 0.7152, 0.0722)), 0.05);
+                // Dark light (0.8.1): its share of the light here dims the tint (lumis_HueFar.w: strength).
+                tint *= 1.0 - clamp(dark / acc.z, 0.0, 1.0) * lumis_HueFar.w;
                 return vec4(tint, cov);
             }
             """;
@@ -85,6 +100,8 @@ final class HueGlsl {
             #define LUMIS_HUE_FRAG
             in float lumis_vBlockShare;
             uniform sampler3D lumis_Hue;
+            #define LUMIS_HUE_DIM
+            uniform sampler3D lumis_HueDim;
             """ + COMMON + """
             #endif
             """;

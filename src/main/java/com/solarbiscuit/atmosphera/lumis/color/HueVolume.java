@@ -12,6 +12,7 @@ import org.lwjgl.opengl.GL11C;
 import org.lwjgl.opengl.GL12C;
 import org.lwjgl.opengl.GL13C;
 import org.lwjgl.opengl.GL21C;
+import org.lwjgl.opengl.GL30C;
 import org.lwjgl.system.MemoryUtil;
 
 import java.nio.ByteBuffer;
@@ -38,6 +39,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>
  * Allocation-free in steady state (0.5.8): jobs, their arrays, the block-light copies and the section buffers are
  * pooled, and jobs travel between the render thread and the workers through two fixed-size queues.
+ * <p>
+ * Dark light (0.8.1): emitters marked {@link EmitterColors#DARK} (Additional Lanterns' black lanterns) count with a
+ * neutral colour and also add their weight to a darkness share per cell, kept in a second, R8 volume of the same
+ * size ({@code r = share}, 0 where unlit, like rg/b). It is allocated the first time a section with dark light is
+ * computed, so worlds without black lanterns never pay for it.
  */
 final class HueVolume {
     private static final int MAX_EMITTERS = 64;
@@ -81,6 +87,13 @@ final class HueVolume {
     private static int centreY;
     private static int centreZ;
     private static ByteBuffer upload;
+    /** Darkness volume (0.8.1): R8, allocated on the first dark section; its CPU copies and which slots hold any. */
+    private static int dimTexture;
+    private static byte[][] cpuDim;
+    private static boolean[] dimNonZero;
+    private static ByteBuffer uploadDim;
+    /** Darkness share at the last {@link #sample} position (0..1). */
+    static float sampledDim;
 
     /** One section's work, reused. Fields are written by the render thread before {@code WORK.offer}, and by the
      * worker before {@code DONE.offer}; the queues order those writes. */
@@ -96,6 +109,9 @@ final class HueVolume {
         /** Output texels; swapped with the slot's CPU copy when the result is taken, so buffers circulate. */
         byte[] out;
         boolean lit;
+        /** Darkness share per texel (0.8.1), valid when {@link #dark}; swapped with the slot's CPU copy like out. */
+        byte[] outDim = new byte[4096];
+        boolean dark;
     }
 
     /** The block-light copies made in one frame, shared by that frame's jobs; recycled when all of them are done. */
@@ -119,6 +135,11 @@ final class HueVolume {
 
     static boolean allocated() {
         return texture != 0;
+    }
+
+    /** The darkness volume, or 0 while no dark light has been seen (samplers then read 0). */
+    static int dimTexture() {
+        return dimTexture;
     }
 
     static int sizeXZ() {
@@ -146,6 +167,8 @@ final class HueVolume {
         nonZero = new boolean[slots];
         nonZeroCount = 0;
         cpu = new byte[slots][];
+        cpuDim = new byte[slots][];
+        dimNonZero = new boolean[slots];
         texture = GpuResources.texture("Lumis light colour");
         int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
         GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
@@ -221,6 +244,12 @@ final class HueVolume {
             GpuResources.deleteTexture(texture);
             texture = 0;
         }
+        if (dimTexture != 0) {
+            GpuResources.deleteTexture(dimTexture);
+            dimTexture = 0;
+        }
+        cpuDim = null;
+        dimNonZero = null;
         // Jobs still on the workers come back later and are recycled by the next drain (their generation is stale).
         drainDone(0);
         closeFrameBatch();
@@ -347,6 +376,28 @@ final class HueVolume {
                     job.out = old;
                 } else {
                     cpu[slot] = null;
+                }
+                // Darkness (0.8.1): allocated on the first dark section; a slot that stops being dark is cleared.
+                boolean dark = !zero && job.dark;
+                if (dark && dimTexture == 0 || dimTexture != 0 && (dark || dimNonZero[slot])) {
+                    // Inside this drain's upload batch (Uploads batches do not nest; 0.8.1 opened a second one in
+                    // allocateDim and stopped the game on the first black lantern).
+                    if (uploaded == 0) {
+                        beginUnpack();
+                        uploaded++;
+                    }
+                    if (dimTexture == 0) {
+                        allocateDim();
+                    }
+                    uploadDimSlot(slot, dark ? job.outDim : null);
+                    dimNonZero[slot] = dark;
+                    if (dark) {
+                        byte[] old = cpuDim[slot];
+                        cpuDim[slot] = job.outDim;
+                        job.outDim = old != null ? old : new byte[4096];
+                    } else {
+                        cpuDim[slot] = null;
+                    }
                 }
             }
             FREE_JOBS.push(job);
@@ -556,6 +607,7 @@ final class HueVolume {
         final float[] sumW = new float[4096];
         final float[] sumCo = new float[4096];
         final float[] sumCg = new float[4096];
+        final float[] sumDark = new float[4096];
         int counter;
     }
 
@@ -605,6 +657,8 @@ final class HueVolume {
         Arrays.fill(s.sumW, 0f);
         Arrays.fill(s.sumCo, 0f);
         Arrays.fill(s.sumCg, 0f);
+        Arrays.fill(s.sumDark, 0f);
+        boolean anyDark = false;
         int[] e = job.emitters;
         byte[] level = s.level;
         int[] stamp = s.stamp;
@@ -661,8 +715,11 @@ final class HueVolume {
                     }
                 }
             }
-            float co = e[o + 4] / 63f;
-            float cg = e[o + 5] / 63f;
+            // Dark light (0.8.1): the reserved chroma (-128, -128) adds no colour, only darkness.
+            boolean dark = e[o + 4] == -128 && e[o + 5] == -128;
+            float co = dark ? 0f : e[o + 4] / 63f;
+            float cg = dark ? 0f : e[o + 5] / 63f;
+            anyDark |= dark;
             for (int v = 0; v < nVisited; v++) {
                 int c = visited[v];
                 float w = level[c];
@@ -670,10 +727,16 @@ final class HueVolume {
                 s.sumW[t] += w;
                 s.sumCo[t] += w * co;
                 s.sumCg[t] += w * cg;
+                if (dark) {
+                    s.sumDark[t] += w;
+                }
             }
         }
         byte[] out = job.out;
         boolean lit = false;
+        if (anyDark) {
+            Arrays.fill(job.outDim, (byte) 0);
+        }
         for (int z = 0; z < 16; z++) {
             for (int y = 0; y < 16; y++) {
                 for (int x = 0; x < 16; x++) {
@@ -696,10 +759,54 @@ final class HueVolume {
                     out[p + 2] = (byte) 255;
                     // Alpha: the static block light level (/15), so dynamic lights can be weighed against it.
                     out[p + 3] = (byte) (a * 17);
+                    if (anyDark) {
+                        job.outDim[t] = (byte) Math.round(Math.min(1f, s.sumDark[t] / w) * 255f);
+                    }
                 }
             }
         }
         job.lit = lit;
+        job.dark = anyDark && lit;
+    }
+
+    /** The darkness volume (0.8.1): same size and wrapping as the colour volume, one byte per block, zeros. */
+    private static void allocateDim() {
+        dimTexture = GpuResources.texture("Lumis light darkness");
+        int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
+        GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
+        int previous = GL11C.glGetInteger(GL12C.GL_TEXTURE_BINDING_3D);
+        GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, dimTexture);
+        GL11C.glTexParameteri(GL12C.GL_TEXTURE_3D, GL11C.GL_TEXTURE_MIN_FILTER, GL11C.GL_LINEAR);
+        GL11C.glTexParameteri(GL12C.GL_TEXTURE_3D, GL11C.GL_TEXTURE_MAG_FILTER, GL11C.GL_LINEAR);
+        GL11C.glTexParameteri(GL12C.GL_TEXTURE_3D, GL11C.GL_TEXTURE_WRAP_S, GL11C.GL_REPEAT);
+        GL11C.glTexParameteri(GL12C.GL_TEXTURE_3D, GL11C.GL_TEXTURE_WRAP_T, GL11C.GL_REPEAT);
+        GL11C.glTexParameteri(GL12C.GL_TEXTURE_3D, GL12C.GL_TEXTURE_WRAP_R, GL11C.GL_REPEAT);
+        ByteBuffer zeros = MemoryUtil.memCalloc(sizeXZ * sizeY * sizeXZ);
+        // The caller (drainDone) has its upload batch open: tight unpacking is already set.
+        GL12C.glTexImage3D(GL12C.GL_TEXTURE_3D, 0, GL30C.GL_R8, sizeXZ, sizeY, sizeXZ, 0, GL11C.GL_RED,
+                GL11C.GL_UNSIGNED_BYTE, zeros);
+        MemoryUtil.memFree(zeros);
+        GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, previous);
+        GL13C.glActiveTexture(previousUnit);
+        GpuResources.textureBytes(dimTexture, (long) sizeXZ * sizeY * sizeXZ);
+        if (uploadDim == null) {
+            uploadDim = MemoryUtil.memAlloc(4096);
+        }
+        logOnce("dark light found: darkness volume on (" + (sizeXZ * sizeY * sizeXZ >> 20) + " MB)");
+    }
+
+    private static void uploadDimSlot(int slot, byte[] r) {
+        int x = slot % nxz;
+        int z = (slot / nxz) % nxz;
+        int y = slot / (nxz * nxz);
+        uploadDim.clear();
+        if (r == null) {
+            MemoryUtil.memSet(uploadDim, 0);
+        } else {
+            uploadDim.put(r).flip();
+        }
+        com.solarbiscuit.atmosphera.lib.gpu.AtmosGl.texSubImage3D(15, dimTexture, x * 16, y * 16, z * 16, 16, 16, 16,
+                GL11C.GL_RED, GL11C.GL_UNSIGNED_BYTE, uploadDim);
     }
 
     private static void uploadSlot(int slot, byte[] rgba) {
@@ -739,6 +846,8 @@ final class HueVolume {
         float g = 0f;
         float b = 0f;
         float a = 0f;
+        float dim = 0f;
+        sampledDim = 0f;
         for (int c = 0; c < 8; c++) {
             int cx = x0 + (c & 1);
             int cy = y0 + (c >> 1 & 1);
@@ -763,6 +872,10 @@ final class HueVolume {
             g += w * (data[t + 1] & 0xFF);
             b += w * (data[t + 2] & 0xFF);
             a += w * (data[t + 3] & 0xFF);
+            byte[] dark = cpuDim[slot];
+            if (dark != null) {
+                dim += w * (dark[t >> 2] & 0xFF);
+            }
         }
         if (b < 0.02f * 255f) {
             return false;
@@ -771,6 +884,7 @@ final class HueVolume {
         out[1] = (g / b - 0.5f) * 4f;
         out[2] = b / 255f;
         out[3] = a / b * 15f;
+        sampledDim = Math.min(1f, dim / b);
         return true;
     }
 
