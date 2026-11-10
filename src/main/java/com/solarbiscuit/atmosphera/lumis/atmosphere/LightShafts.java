@@ -12,8 +12,6 @@ import com.solarbiscuit.atmosphera.lib.gpu.RenderTargets;
 import com.solarbiscuit.atmosphera.lumis.Lumis;
 import com.solarbiscuit.atmosphera.lumis.LumisConfig;
 import com.solarbiscuit.atmosphera.lumis.color.ColoredLight;
-import com.solarbiscuit.atmosphera.lib.wind.Wind;
-import com.solarbiscuit.atmosphera.lib.wind.WindVector;
 import com.solarbiscuit.atmosphera.lumis.shadow.HorizonMap;
 import com.solarbiscuit.atmosphera.lumis.shadow.SunShadows;
 import com.solarbiscuit.atmosphera.lumis.sun.SunModel;
@@ -48,9 +46,9 @@ import org.lwjgl.system.MemoryStack;
  *   <li>a full-resolution composite with a depth-aware upsample: {@code scene * transmittance + light * (1 - scene)}.</li>
  * </ol>
  * Under water (0.7.2) the march switches to water: uniform scattering, depth colour and moving caustics from the
- * surface (see {@code ShaftGlsl.MARCH}); no screen rays, cookie or block glow there. Off in lava or powder snow, while
- * blind, under Fabulous graphics, in caves (eye sky light; under water, the sky light at the surface above) and where
- * the dimension has no sun. Render thread.
+ * surface (see {@code ShaftGlsl.MARCH}), plus rays from the Snell window in the surface (0.8.7); no block glow
+ * there. Off in lava or powder snow, while blind, under Fabulous graphics, in caves (eye sky light; under water,
+ * the sky light at the surface above) and where the dimension has no sun. Render thread.
  */
 public final class LightShafts {
     public static AtmosFeature feature;
@@ -89,6 +87,8 @@ public final class LightShafts {
     private static final float RADIAL_EXPOSURE = 2.0f;
     /** Taps per blur pass, and the share of the way to the sun each pass covers (12 x 12 = 144 points in all). */
     private static final int RAY_TAPS = 12;
+    /** 0.8.17: blur taps per pass for the underwater rays (the first pass covers 1/taps of the way). */
+    private static final int WATER_RAY_TAPS = 8;
     private static final float[] RAY_STEPS = {1f / 12f, 1f};
     /** Screen rays over the volumetric march, relative to RADIAL mode. */
     private static final float LAYERED_RAYS = 0.8f;
@@ -97,13 +97,6 @@ public final class LightShafts {
     private static final int CAP_LINES_HIGH = 720;
     /** Block glow in the mist: gain on the colour volume's level squared (tuned in the night glow scene). */
     private static final float GLOW_GAIN = 120f;
-    /** Sky cookie: layer height (world y), cell size (blocks) and drift speed (blocks a second at full wind). */
-    private static final float COOKIE_HEIGHT = 200f;
-    private static final float COOKIE_CELL = 64f;
-    private static final float COOKIE_DRIFT = 4f;
-    private static final WindVector WIND = new WindVector();
-    private static double cookieX;
-    private static double cookieZ;
     private static final Vector4f SUN = new Vector4f();
     private static final Matrix4f VIEW_PROJ = new Matrix4f();
 
@@ -112,10 +105,14 @@ public final class LightShafts {
     /** Sun-ray ping-pong targets (R16F, linear), at the low target's size. */
     private static RenderTargets.Target rayA;
     private static RenderTargets.Target rayB;
+    /** 0.8.15: low-resolution view depth for the composite's weights (R32F). */
+    private static RenderTargets.Target lowDepth;
+    private static Program depthDown;
+    private static Program composite;
     private static Program march;
     private static Program rayMask;
+    private static Program rayMaskWater;
     private static Program rayBlur;
-    private static Program composite;
     private static Program resolve;
     private static int[] resolveReproject;
     /** Temporal history of the low-resolution light (0.7.1). */
@@ -134,6 +131,41 @@ public final class LightShafts {
     /** Absorption per block without Torrente (Torrente's fallback style). */
     private static final float[] WATER_ABSORB = {0.25f, 0.09f, 0.06f};
     private static final float WATER_CAUSTICS = 1.0f;
+    /*
+     * Caustic waves (0.8.6): 5 swells, directions spread over half a turn, wavelengths in blocks, drifting at about
+     * WAVE_SPEED blocks a second (rounded to whole cycles per hour of the lib clock). Their squared sum is expanded
+     * into 25 cosine terms for the shader (see ShaftGlsl.lumis_causticMean).
+     */
+    private static final int WAVES = 5;
+    private static final double[] WAVE_ANGLE = {7, 43, 79, 118, 154};
+    private static final double[] WAVE_LENGTH = {6.1, 4.9, 7.3, 5.5, 4.3};
+    private static final double WAVE_SPEED = 0.6;
+    private static final int WAVE_TERMS = WAVES + WAVES * (WAVES - 1);
+    private static final double[] WAVE_KX = new double[WAVES];
+    private static final double[] WAVE_KZ = new double[WAVES];
+    private static final double[] WAVE_OMEGA = new double[WAVES];
+    private static final double[] WAVE_PHASE = new double[WAVES];
+    /** Haze: the share of the mean underwater light kept; beam gain on the caustics' moving part. */
+    private static final float WATER_HAZE = 0.25f;
+    private static final float WATER_BEAMS = 1.0f;
+    /** Gain on all light scattered under water (0.8.8; see ShaftGlsl.lumis_underwater). */
+    private static final float WATER_GAIN = 10.0f;
+    /** Snell-window rays (0.8.7): core radius and floor of the mask, caustic weight, and light gain. */
+    private static final float WATER_RAY_CORE = 0.22f;
+    private static final float WATER_RAY_FLOOR = 0.06f;
+    private static final float WATER_RAY_CAUSTIC = 0.35f;
+    private static final float WATER_RAY_GAIN = 0.8f;
+
+    static {
+        double hour = 2.0 * Math.PI / 3600.0;
+        for (int j = 0; j < WAVES; j++) {
+            double k = 2.0 * Math.PI / WAVE_LENGTH[j];
+            double a = Math.toRadians(WAVE_ANGLE[j]);
+            WAVE_KX[j] = k * Math.cos(a);
+            WAVE_KZ[j] = k * Math.sin(a);
+            WAVE_OMEGA[j] = Math.max(1, Math.round(k * WAVE_SPEED / hour)) * hour;
+        }
+    }
     private static long lastNanos;
 
     private LightShafts() {
@@ -182,11 +214,6 @@ public final class LightShafts {
         } else {
             surfaceSky = eyeSky;
         }
-        // The sky cookie drifts with the wind; kept modulo its 4096-block repeat.
-        Wind.global(level, 0f, WIND);
-        float speed = COOKIE_DRIFT * (0.3f + WIND.strength);
-        cookieX = (cookieX + WIND.dirX * speed * dt) % 4096.0;
-        cookieZ = (cookieZ + WIND.dirZ * speed * dt) % 4096.0;
         SkyCover.update(dt);
     }
 
@@ -211,7 +238,7 @@ public final class LightShafts {
             return;
         }
         boolean marchPossible = LumisConfig.shaftMode.get() == Mode.AUTO && SunShadows.ready();
-        float waterOption = LumisConfig.shaftUnderwater.get().floatValue();
+        float waterOption = LumisConfig.shaftUnderwaterOn.get() ? LumisConfig.shaftUnderwater.get().floatValue() : 0f;
         if (underwater && (!marchPossible || waterOption <= 0f)) {
             return;
         }
@@ -246,7 +273,9 @@ public final class LightShafts {
 
         // Screen rays only reach so far from the sun: they run inside a box around it (and only when the sun is in
         // front of the camera). RADIAL mode needs them; AUTO adds them over the march when sun rays are on.
-        boolean rays = !underwater && sunOn && (!volumetric || LumisConfig.shaftSunRays.get() && debug == 0);
+        // Under water (0.8.7): rays from the Snell window, converging on the refracted sun.
+        boolean waterRays = underwater && sunOn && LumisConfig.shaftUnderwaterRays.get() && debug == 0;
+        boolean rays = waterRays || !underwater && sunOn && (!volumetric || LumisConfig.shaftSunRays.get() && debug == 0);
         int boxX = 0;
         int boxY = 0;
         int boxW = 0;
@@ -254,8 +283,16 @@ public final class LightShafts {
         float sunU = 0f;
         float sunV = 0f;
         if (rays) {
-            SUN.set(SunModel.dirX, SunModel.dirY, SunModel.dirZ, 0f)
-                    .mul(VIEW_PROJ.set(ctx.projection()).mul(ctx.poseStack().last().pose()));
+            float sx = SunModel.dirX;
+            float sy = SunModel.dirY;
+            float sz = SunModel.dirZ;
+            if (underwater) {
+                // Seen from under water the sun sits at its refracted direction (n = 1.33), nearer straight up.
+                sy = (float) Math.sqrt(Math.max(0f, 1f - (1f - sy * sy) / 1.7689f));
+                sx /= 1.33f;
+                sz /= 1.33f;
+            }
+            SUN.set(sx, sy, sz, 0f).mul(VIEW_PROJ.set(ctx.projection()).mul(ctx.poseStack().last().pose()));
             if (SUN.w > 1e-4f) {
                 sunU = SUN.x / SUN.w * 0.5f + 0.5f;
                 sunV = SUN.y / SUN.w * 0.5f + 0.5f;
@@ -278,6 +315,7 @@ public final class LightShafts {
             low = RenderTargets.create("Lumis light shafts", divisor, GL30C.GL_RGBA16F, false);
             rayA = RenderTargets.create("Lumis sun rays A", divisor, GL30C.GL_R16F, true);
             rayB = RenderTargets.create("Lumis sun rays B", divisor, GL30C.GL_R16F, true);
+            lowDepth = RenderTargets.create("Lumis light shaft depth", divisor, GL30C.GL_R32F, false);
             lowDivisor = divisor;
         }
         if (!low.ensure(scene)) {
@@ -335,7 +373,7 @@ public final class LightShafts {
                 int marchSteps = temporal ? Math.max(4, quality.steps / 2) : quality.steps;
                 GL20C.glUniform4i(p.u()[3], divisor, marchSteps, debug, sunOn ? 1 : 0);
                 temporalFrame = (temporalFrame + 1) & 1023;
-                GL20C.glUniform4f(p.u()[14], temporal ? (temporalFrame * 0.618034f) % 1f : 0f, 0f, 0f, 0f);
+                GL20C.glUniform4f(p.u()[12], temporal ? (temporalFrame * 0.618034f) % 1f : 0f, 0f, 0f, 0f);
                 GL20C.glUniform4f(p.u()[4], r, g, b, 0f);
                 float mist = LumisConfig.shaftMist.get().floatValue();
                 float density = underwater ? WATER_SCATTER
@@ -359,23 +397,24 @@ public final class LightShafts {
                 float tintAmount = LumisConfig.shaftHeightTint.get().floatValue();
                 setTint(p.u()[8], lerp(0.97f, 0.90f, golden), lerp(0.92f, 0.78f, golden), tintAmount, 1f / 96f);
                 setTint(p.u()[9], 0.98f, 1.07f, tintAmount, 0f, 0.93f);
-                float cookie = underwater ? 0f : LumisConfig.shaftSkyCookie.get().floatValue();
-                GL20C.glUniform4f(p.u()[10], cookie, (float) (COOKIE_HEIGHT - ctx.camera().y), 1f / COOKIE_CELL, 0f);
-                GL20C.glUniform4f(p.u()[11], (float) cookieX, (float) cookieZ, 0f, 0f);
                 // Block glow: mostly a night effect (sunlight swamps it by day).
                 float glowGain = glowOn ? glowOption * GLOW_GAIN * (1f - 0.8f * Math.min(1f, SunModel.strength)) : 0f;
-                GL20C.glUniform4f(p.u()[12], glowGain, ColoredLight.glowReach(), 0f, 0f);
-                GL20C.glUniform1i(p.u()[13], 14);
+                GL20C.glUniform4f(p.u()[10], glowGain, ColoredLight.glowReach(), 0f, 0f);
+                GL20C.glUniform1i(p.u()[11], 14);
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
                 GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, glowOn ? ColoredLight.glowTexture() : 0);
                 hueBound = true;
                 // Under water (0.7.2): the surface above the camera, caustics, absorption, and the column field on
                 // unit 15 (2D; Lumis keeps its LOD colour volume on that unit's 3D target, which this leaves alone).
-                GL20C.glUniform4f(p.u()[15], underwater ? 1f : 0f, (float) (surfaceY - ctx.camera().y), WATER_CAUSTICS, 0f);
-                GL20C.glUniform4f(p.u()[16], WATER_ABSORB[0], WATER_ABSORB[1], WATER_ABSORB[2], 0f);
-                GL20C.glUniform1i(p.u()[17], 15);
+                GL20C.glUniform4f(p.u()[13], underwater ? 1f : 0f, (float) (surfaceY - ctx.camera().y), WATER_CAUSTICS, 0f);
+                GL20C.glUniform4f(p.u()[14], WATER_ABSORB[0], WATER_ABSORB[1], WATER_ABSORB[2], 0f);
+                if (underwater) {
+                    GL20C.glUniform4fv(p.u()[17], waveTerms(ctx.camera(), level, ctx.partialTick(), stack));
+                    GL20C.glUniform4f(p.u()[18], WATER_HAZE, WATER_BEAMS, WATER_GAIN, 0f);
+                }
+                GL20C.glUniform1i(p.u()[15], 15);
                 // 0.8.1: darkness of dark light on unit 11 (3D target; Minecraft binds only 2D textures there).
-                GL20C.glUniform1i(p.u()[18], 11);
+                GL20C.glUniform1i(p.u()[16], 11);
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE11);
                 GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, glowOn ? ColoredLight.glowDimTexture() : 0);
                 dimBound = true;
@@ -393,13 +432,22 @@ public final class LightShafts {
                 GL11C.glScissor(boxX / divisor - 1, boxY / divisor - 1, boxW / divisor + 3, boxH / divisor + 3);
                 GL11C.glDisable(GL11C.GL_BLEND);
                 float aspect = scene.width() / (float) Math.max(1, scene.height());
-                // Mask: open sky x sun core, into A (the scene depth is still on unit 12).
+                // Mask: open sky x sun core, into A (the scene depth is still on unit 12). Under water: the open
+                // Snell window x caustics x core around the refracted sun.
                 rayA.bindWrite();
-                Program p = rayMask;
+                Program p = underwater ? rayMaskWater : rayMask;
                 GL20C.glUseProgram(p.id());
                 GL20C.glUniform4i(p.u()[0], divisor, 0, 0, 0);
                 GL20C.glUniform4f(p.u()[1], sunU, sunV, aspect, RADIAL_REACH);
-                GL20C.glUniform4f(p.u()[2], RADIAL_CORE, RADIAL_FLOOR, 0f, 0f);
+                if (underwater) {
+                    GL20C.glUniform4f(p.u()[2], WATER_RAY_CORE, WATER_RAY_FLOOR, WATER_RAY_CAUSTIC, 0f);
+                    GL20C.glUniformMatrix4fv(p.u()[3], false, ctx.invViewProjection().get(stack.mallocFloat(16)));
+                    GL20C.glUniformMatrix4fv(p.u()[4], false, VIEW_PROJ.get(stack.mallocFloat(16)));
+                    GL20C.glUniform4f(p.u()[5], (float) (surfaceY - ctx.camera().y), 0f, 0f, 0f);
+                    GL20C.glUniform4fv(p.u()[6], waveTerms(ctx.camera(), level, ctx.partialTick(), stack));
+                } else {
+                    GL20C.glUniform4f(p.u()[2], RADIAL_CORE, RADIAL_FLOOR, 0f, 0f);
+                }
                 GlslPrograms.drawFullscreen();
                 // Blur towards the sun, finest step first: A -> B -> light.
                 p = rayBlur;
@@ -408,7 +456,16 @@ public final class LightShafts {
                 // Rays: the march light already carries (1 - 0.5 cover); together the rays drop by about 0.85 x cover.
                 float k = 0.6f * (1f + golden) * (1f - 0.7f * rain) * (volumetric ? LAYERED_RAYS : 1f)
                         * (1f - 0.85f * cover) / Math.max(0.05f, 1f - 0.5f * cover);
+                float path = 0f;
+                if (underwater) {
+                    // The water above the camera and a few blocks of view colour the rays; the shader applies the
+                    // absorption (Torrente's style when installed, 0.8.13).
+                    float ly = (float) Math.sqrt(Math.max(0f, 1f - (1f - SunModel.dirY * SunModel.dirY) / 1.7689f));
+                    path = (float) Math.max(0.0, surfaceY - ctx.camera().y) / Math.max(0.05f, ly) + 6f;
+                    k = WATER_RAY_GAIN;
+                }
                 GL20C.glUniform4f(p.u()[3], r * k, g * k, b * k, 0f);
+                GL20C.glUniform4f(p.u()[4], WATER_ABSORB[0], WATER_ABSORB[1], WATER_ABSORB[2], path);
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE13);
                 for (int pass = 0; pass < RAY_STEPS.length; pass++) {
                     boolean last = pass == RAY_STEPS.length - 1;
@@ -424,8 +481,9 @@ public final class LightShafts {
                     } else {
                         (pass == 0 ? rayB : rayA).bindWrite();
                     }
-                    GL20C.glUniform4i(p.u()[0], last ? 1 : 0, RAY_TAPS, debug, 0);
-                    GL20C.glUniform4f(p.u()[2], RAY_STEPS[pass], RADIAL_EXPOSURE, 0f, 0f);
+                    int taps = underwater ? WATER_RAY_TAPS : RAY_TAPS;
+                    GL20C.glUniform4i(p.u()[0], last ? 1 : 0, taps, debug, 0);
+                    GL20C.glUniform4f(p.u()[2], last ? RAY_STEPS[pass] : 1f / taps, RADIAL_EXPOSURE, 0f, 0f);
                     GlslPrograms.drawFullscreen();
                 }
                 GL11C.glDisable(GL11C.GL_BLEND);
@@ -459,12 +517,35 @@ public final class LightShafts {
                 GpuTimers.end("lumis_shafts_resolve");
             }
 
+            // 1c. Low-resolution view depth for the composite's weights (0.8.15).
+            if (!lowDepth.ensure(scene)) {
+                return;
+            }
+            {
+                GpuTimers.begin("lumis_shafts_depthdown");
+                GL11C.glDisable(GL11C.GL_SCISSOR_TEST);
+                GL11C.glDisable(GL11C.GL_BLEND);
+                lowDepth.bindWrite();
+                Program p = depthDown;
+                GL20C.glUseProgram(p.id());
+                GL20C.glUniform1i(p.u()[0], 12);
+                GL20C.glUniform4i(p.u()[1], divisor, 0, 0, 0);
+                GlslPrograms.drawFullscreen();
+                // Unit 15's 2D target (the column field under water is done by now); unbound in the finally.
+                GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
+                GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, lowDepth.texture());
+                columnBound = true;
+                GpuTimers.end("lumis_shafts_depthdown");
+            }
+
             // 2. Composite into the scene colour (its depth stays sampleable: this framebuffer has no depth).
             GpuTimers.begin("lumis_shafts_composite");
             if (RenderTargets.bindColorOnly(scene)) {
                 if (volumetric) {
                     GL11C.glDisable(GL11C.GL_SCISSOR_TEST);
                 } else {
+                    // RADIAL: only the box around the sun (the depth pass above turned the scissor test off).
+                    GL11C.glEnable(GL11C.GL_SCISSOR_TEST);
                     GL11C.glScissor(boxX, boxY, boxW, boxH);
                 }
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE13);
@@ -484,6 +565,7 @@ public final class LightShafts {
                 sceneBound = true;
                 GL20C.glUniform1i(p.u()[4], 14);
                 GL20C.glUniform4f(p.u()[5], TONE_HEADROOM, 0f, 0f, 0f);
+                GL20C.glUniform1i(p.u()[6], 15);
                 GL45C.glTextureBarrier();
                 // The shader writes the final colour (no blending).
                 GL11C.glDisable(GL11C.GL_BLEND);
@@ -526,18 +608,22 @@ public final class LightShafts {
         String water = FrameUniforms.glslBlock().contains("torrente_Absorb") ? "#define LUMIS_TORRENTE\n" : "";
         march = Program.of("Lumis shaft march", header + water + ShaftGlsl.MARCH,
                 "u_Depth", "lumis_Horizon", "u_InvViewProj", "u_Info", "u_Light", "u_Medium", "u_Shape",
-                "u_Phase", "u_TintLow", "u_TintHigh", "u_Cookie", "u_CookieOff", "u_Glow", "u_Hue", "u_Temporal",
-                "u_Water", "u_Absorb", "atmos_ColumnField", "u_HueDim");
+                "u_Phase", "u_TintLow", "u_TintHigh", "u_Glow", "u_Hue", "u_Temporal",
+                "u_Water", "u_Absorb", "atmos_ColumnField", "u_HueDim", "u_Waves", "u_Beam");
         rayMask = Program.of("Lumis sun-ray mask", header + ShaftGlsl.RAY_MASK, "u_Info", "u_SunPos", "u_Ray");
-        rayBlur = Program.of("Lumis sun-ray blur", header + ShaftGlsl.RAY_BLUR, "u_Info", "u_SunPos", "u_Step", "u_Light");
+        rayMaskWater = Program.of("Lumis Snell-window ray mask", header + ShaftGlsl.RAY_MASK_WATER, "u_Info", "u_SunPos",
+                "u_Ray", "u_InvViewProj", "u_ViewProj", "u_Surface", "u_Waves");
+        rayBlur = Program.of("Lumis sun-ray blur", header + water + ShaftGlsl.RAY_BLUR, "u_Info", "u_SunPos", "u_Step",
+                "u_Light", "u_Tint");
         composite = Program.of("Lumis shaft composite", header + ShaftGlsl.COMPOSITE, "u_Low", "u_Depth", "u_Info", "u_Mix",
-                "u_Scene", "u_Tone");
+                "u_Scene", "u_Tone", "u_LowDepth");
+        depthDown = Program.of("Lumis shaft depth", header + ShaftGlsl.DEPTH_DOWN, "u_Depth", "u_Info");
         resolve = Program.of("Lumis shaft resolve", header + ShaftGlsl.RESOLVE, "u_Cur", "u_Hist", "u_Depth",
                 "u_InvViewProj", "u_Info");
         if (resolve != null) {
             resolveReproject = com.solarbiscuit.atmosphera.lib.gpu.PostPasses.locateReproject(resolve.id());
         }
-        if (march == null || rayMask == null || rayBlur == null || composite == null || resolve == null) {
+        if (march == null || rayMask == null || rayMaskWater == null || rayBlur == null || composite == null || depthDown == null || resolve == null) {
             failed = true;
             Lumis.LOGGER.error("Light shafts are off: a shader did not compile (see above).");
             return false;
@@ -557,6 +643,8 @@ public final class LightShafts {
             rayA = null;
             rayB.release();
             rayB = null;
+            lowDepth.release();
+            lowDepth = null;
         }
     }
 
@@ -566,6 +654,39 @@ public final class LightShafts {
     private static boolean sceneBound;
     /** Share of a pixel's headroom (1 - colour) the shafts may fill at most (0.6.4 soft add). */
     private static final float TONE_HEADROOM = 0.6f;
+
+    /**
+     * The 25 caustic terms for this frame (stack memory): (kx, kz, amplitude, phase at the camera). Phases are summed in
+     * double precision from the world camera position and the lib's world clock, so the shader works camera-relative
+     * and the pattern stays put as the camera moves; the drift completes whole cycles per hour, so the clock's hourly
+     * wrap does not jump.
+     */
+    private static java.nio.FloatBuffer waveTerms(Vec3 camera, ClientLevel level, float partialTick, MemoryStack stack) {
+        double held = com.solarbiscuit.atmosphera.lib.wind.AtmosClock.overrideSeconds();
+        double t = Double.isNaN(held)
+                ? com.solarbiscuit.atmosphera.lib.wind.AtmosClock.worldSeconds(level, partialTick) % 3600.0 : held;
+        for (int j = 0; j < WAVES; j++) {
+            WAVE_PHASE[j] = WAVE_KX[j] * camera.x + WAVE_KZ[j] * camera.z - WAVE_OMEGA[j] * t + 1.7 * j;
+        }
+        java.nio.FloatBuffer out = stack.mallocFloat(WAVE_TERMS * 4);
+        float self = 1f / WAVES;
+        float pair = 2f / WAVES;
+        for (int j = 0; j < WAVES; j++) {
+            putTerm(out, 2 * WAVE_KX[j], 2 * WAVE_KZ[j], self, 2 * WAVE_PHASE[j]);
+        }
+        for (int i = 0; i < WAVES; i++) {
+            for (int j = i + 1; j < WAVES; j++) {
+                putTerm(out, WAVE_KX[i] + WAVE_KX[j], WAVE_KZ[i] + WAVE_KZ[j], pair, WAVE_PHASE[i] + WAVE_PHASE[j]);
+                putTerm(out, WAVE_KX[i] - WAVE_KX[j], WAVE_KZ[i] - WAVE_KZ[j], pair, WAVE_PHASE[i] - WAVE_PHASE[j]);
+            }
+        }
+        return out.flip();
+    }
+
+    private static void putTerm(java.nio.FloatBuffer out, double kx, double kz, float amplitude, double phase) {
+        double tau = 2.0 * Math.PI;
+        out.put((float) kx).put((float) kz).put(amplitude).put((float) (phase - Math.floor(phase / tau) * tau));
+    }
 
     private static float lerp(float a, float b, float t) {
         return a + (b - a) * t;

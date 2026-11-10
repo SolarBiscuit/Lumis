@@ -6,6 +6,7 @@ license = "${mod_license}"
  modId = "${mod_id}"
  version = "${mod_version}"
  displayName = "${mod_name}"
+ logoFile = "lumis.png"
  authors = "${mod_authors}"
  credits = "Made by SolarBiscuit. GPL-3.0-only. Keep the copyright and attribution notices (see NOTICE)."
  description = '''${mod_description}'''

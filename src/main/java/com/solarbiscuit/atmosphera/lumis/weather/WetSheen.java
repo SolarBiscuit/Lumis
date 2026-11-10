@@ -52,7 +52,7 @@ public final class WetSheen {
                 out -> {
                     float k = LumisConfig.wetStrength.get().floatValue();
                     out[0] = wetness * k;
-                    out[1] = rainHere * k;
+                    out[1] = LumisConfig.wetRings.get() ? rainHere * k : 0f;
                     out[2] = 1f - 0.85f * rainHere;
                     out[3] = 0f;
                 });

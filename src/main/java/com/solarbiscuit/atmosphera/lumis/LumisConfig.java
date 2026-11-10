@@ -38,23 +38,34 @@ public final class LumisConfig {
     public static AtmosOption<Boolean> shaftSunRays;
     public static AtmosOption<Integer> shaftDebug;
     public static AtmosOption<Double> shaftHeightTint;
-    public static AtmosOption<Double> shaftSkyCookie;
     public static AtmosOption<Double> shaftBlockGlow;
     public static AtmosOption<Boolean> shaftTemporal;
+    public static AtmosOption<Boolean> shaftUnderwaterOn;
     public static AtmosOption<Double> shaftUnderwater;
+    public static AtmosOption<Boolean> shaftUnderwaterRays;
     public static AtmosConfig.FeatureSwitch coloredLight;
     public static AtmosOption<com.solarbiscuit.atmosphera.lumis.color.ColoredLight.Quality> colorQuality;
     public static AtmosOption<Double> colorStrength;
     public static AtmosOption<Double> colorSaturation;
+    public static AtmosOption<Boolean> colorDarkOn;
     public static AtmosOption<Double> colorDark;
     public static AtmosOption<Boolean> colorDump;
     public static AtmosConfig.FeatureSwitch wetSheen;
     public static AtmosOption<Double> wetStrength;
+    public static AtmosOption<Boolean> wetRings;
     public static AtmosConfig.FeatureSwitch lens;
+    public static AtmosOption<Boolean> lensBloomOn;
     public static AtmosOption<Double> lensBloom;
+    public static AtmosOption<Double> lensBloomThreshold;
+    public static AtmosOption<Double> lensBloomNightThreshold;
+    public static AtmosOption<Boolean> lensFlareOn;
     public static AtmosOption<Double> lensFlare;
+    public static AtmosOption<Boolean> lensVibranceOn;
     public static AtmosOption<Double> lensVibrance;
+    public static AtmosOption<Boolean> lensVignetteOn;
     public static AtmosOption<Double> lensVignette;
+    public static AtmosOption<Double> lensVignetteSize;
+    public static AtmosOption<String> lensVignetteColor;
 
     private LumisConfig() {
     }
@@ -139,10 +150,6 @@ public final class LumisConfig {
         shaftHeightTint = config.percent("height_tint", 0.5, 0.0, 1.0, ChangeTier.LIVE, "Air colour by height",
                 "Mist near the ground is a little warmer (more at sunrise and sunset), high air a little cooler. "
                         + "0 keeps one colour.");
-        shaftSkyCookie = config.percent("sky_cookie", 0.0, 0.0, 1.0, ChangeTier.LIVE, "Beams over open land",
-                "An invisible broken cloud layer, drifting with the wind, that breaks up sunlight in the mist, so faint "
-                        + "beams show over open land too (where nothing else cuts the light). Mist only: it casts no "
-                        + "shadows on the ground. 0 is off.");
         shaftBlockGlow = config.percent("block_glow", 0.5, 0.0, 2.0, ChangeTier.LIVE, "Light glow in the mist",
                 "Lanterns, torches, lava and other lights glow in the mist in their own colour, mostly at night. "
                         + "Follows the game's light, so the glow stops at walls. Needs coloured light and sun shadows "
@@ -150,10 +157,15 @@ public final class LumisConfig {
         shaftTemporal = config.toggle("temporal", true, ChangeTier.LIVE, "Temporal light shafts",
                 "Each frame marches half the steps at a shifting offset and blends with the frames before (the camera's "
                         + "motion is followed), for smoother beams at lower cost. Off: every frame marches all steps.");
-        shaftUnderwater = config.percent("underwater", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Underwater light shafts",
+        shaftUnderwaterOn = config.toggle("underwater_enabled", true, ChangeTier.LIVE, "Underwater light shafts",
+                "Sunbeams through the water while your head is under water (strength below).");
+        shaftUnderwater = config.percent("underwater", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Underwater light shaft strength",
                 "With your head under water: sunbeams through the water, coloured by its depth and broken up by "
                         + "moving caustics from the surface. Uses Torrente's water colour when it is installed. Needs sun "
                         + "shadows (AUTO light shafts). 0 is off.");
+        shaftUnderwaterRays = config.toggle("underwater_rays", true, ChangeTier.LIVE, "Underwater sun rays",
+                "Looking up from under water: rays fanning out from the bright window in the surface towards the sun; "
+                        + "kelp, rock and mobs in front of it cut dark streaks.");
         shaftDebug = config.slider("debug", 0, 0, 3, 1, ChangeTier.LIVE, "Light shaft debug view",
                 "For testing: 1 march length / depth / sky (radial: open-sky share / falloff), 2 sun visibility in the "
                         + "air, 3 raw light. 0 is off.");
@@ -170,7 +182,9 @@ public final class LumisConfig {
                 "How strongly coloured light tints what it falls on.");
         colorSaturation = config.percent("saturation", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Light colour saturation",
                 "How vivid the light colours are.");
-        colorDark = config.percent("dark_light", 0.75, 0.0, 1.0, ChangeTier.LIVE, "Dark light",
+        colorDarkOn = config.toggle("dark_light_enabled", true, ChangeTier.LIVE, "Dark light",
+                "Black lanterns (Additional Lanterns) give dark light (strength below). Off: plain white light.");
+        colorDark = config.percent("dark_light", 0.75, 0.0, 1.0, ChangeTier.LIVE, "Dark light strength",
                 "How much the light of black lanterns (Additional Lanterns) darkens what it falls on instead of "
                         + "lighting it white. Mobs still spawn by the game's own light level. 0 gives them plain light.");
         colorDump = config.toggle("dump_colors", false, ChangeTier.LIVE, "List light colours (for pack makers)",
@@ -184,22 +198,44 @@ public final class LumisConfig {
                         + "trees, not in snow.");
         wetStrength = config.percent("strength", 1.0, 0.0, 1.5, ChangeTier.LIVE, "Wetness",
                 "How dark and shiny wet surfaces get.");
+        wetRings = config.toggle("rain_rings", true, ChangeTier.LIVE, "Rain rings on wet ground",
+                "Rings from raindrops on upward faces near you while it rains.");
 
         config.section("lens", "Lens and colour: bloom, a lens flare from the sun, vibrance and a vignette over the picture.");
         lens = config.featureSwitch("enabled", true, "Lens and colour effects",
                 "Effects on the finished picture, hand included. Off under shaderpacks that do their own bloom and "
                         + "colour grading.");
-        lensBloom = config.percent("bloom", 0.5, 0.0, 2.0, ChangeTier.LIVE, "Bloom",
+        config.group();
+        lensBloomOn = config.toggle("bloom_enabled", true, ChangeTier.LIVE, "Bloom",
                 "Bright things glow softly into their surroundings: the sun, lava, lanterns and glowstone at night, "
-                        + "sunlit snow. The sky itself does not bloom. 0 is off.");
-        lensFlare = config.percent("lens_flare", 0.5, 0.0, 2.0, ChangeTier.LIVE, "Lens flare",
+                        + "sunlit snow. The sky itself does not bloom.");
+        lensBloom = config.percent("bloom", 0.5, 0.0, 2.0, ChangeTier.LIVE, "Bloom strength",
+                "How strongly bright things glow.");
+        lensBloomThreshold = config.percent("bloom_threshold", 0.88, 0.3, 1.0, ChangeTier.LIVE, "Bloom threshold (day)",
+                "How bright a pixel must be to bloom in daylight (brightness 0-100%). Lower: more of the picture glows.");
+        lensBloomNightThreshold = config.percent("bloom_night_threshold", 0.5, 0.2, 1.0, ChangeTier.LIVE,
+                "Bloom threshold (night)", "The same at night, when lights are dimmer on screen.");
+        config.group();
+        lensFlareOn = config.toggle("lens_flare_enabled", true, ChangeTier.LIVE, "Lens flare",
                 "Looking towards the sun: coloured ghosts across the screen, a faint halo and a starburst. Fades as "
-                        + "leaves, hills or skybox clouds cover the sun. 0 is off.");
-        lensVibrance = config.percent("vibrance", 0.5, 0.0, 1.0, ChangeTier.LIVE, "Vibrance",
-                "Like NVIDIA's digital vibrance: above 50% dull colours become more vivid while already vivid ones "
-                        + "change little; below 50% colours fade evenly towards grey. 50% leaves colours as they are.");
-        lensVignette = config.percent("vignette", 0.0, 0.0, 1.0, ChangeTier.LIVE, "Vignette",
-                "Darkens the corners of the picture. 0 is off.");
+                        + "leaves, hills or skybox clouds cover the sun.");
+        lensFlare = config.percent("lens_flare", 0.5, 0.0, 2.0, ChangeTier.LIVE, "Lens flare strength",
+                "How bright the flare is.");
+        config.group();
+        lensVibranceOn = config.toggle("vibrance_enabled", false, ChangeTier.LIVE, "Vibrance",
+                "Like NVIDIA's digital vibrance: dull colours become more vivid while already vivid ones change little.");
+        lensVibrance = config.percent("vibrance", 0.65, 0.0, 1.0, ChangeTier.LIVE, "Vibrance amount",
+                "50% leaves colours as they are; above it dull colours gain saturation, below it colours fade evenly "
+                        + "towards grey (0% = grey).");
+        config.group();
+        lensVignetteOn = config.toggle("vignette_enabled", false, ChangeTier.LIVE, "Vignette",
+                "Shades the corners of the picture towards the vignette colour.");
+        lensVignette = config.percent("vignette", 0.35, 0.0, 1.0, ChangeTier.LIVE, "Vignette strength",
+                "How strongly the corners are shaded.");
+        lensVignetteSize = config.percent("vignette_size", 0.6, 0.0, 1.0, ChangeTier.LIVE, "Vignette size",
+                "How far in from the corners the shading reaches.");
+        lensVignetteColor = config.color("vignette_color", "#000000", ChangeTier.LIVE, "Vignette colour",
+                "The colour the corners are shaded towards, for example #000000 (black, the default) or #1A0F2E."); 
         config.register();
     }
 }

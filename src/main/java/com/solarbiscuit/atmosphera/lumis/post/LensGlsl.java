@@ -125,7 +125,8 @@ final class LensGlsl {
             uniform vec4 u_Mix;     // x: bloom strength (0 off), y: flare strength (0 off)
             uniform vec4 u_Sun;     // xy: sun position (0..1 screen), z: width / height, w: flare fade (edge, horizon, cover)
             uniform vec4 u_SunCol;  // rgb: sun colour (luminance 1)
-            uniform vec4 u_Grade;   // x: vibrance (-1..1, 0 neutral), y: vignette strength (0 off)
+            uniform vec4 u_Grade;   // x: vibrance (-1..1, 0 neutral), y: vignette strength (0 off), z: vignette size
+            uniform vec4 u_Vignette; // rgb: vignette colour (0.8.4; black = the 0.8.0 darkening)
             out vec4 o_Out;
 
             float lumis_disc(float d, float r) {
@@ -184,8 +185,9 @@ final class LensGlsl {
                 if (u_Grade.y > 0.0) {
                     vec2 d = (uv - 0.5) * vec2(u_Sun.z, 1.0);
                     float r = length(d) / length(vec2(u_Sun.z, 1.0) * 0.5);
-                    float v = smoothstep(0.4, 1.05, r);
-                    c *= 1.0 - u_Grade.y * 0.85 * v * v;
+                    // Size 0.6 gives the 0.8.0 shape (shading from 40% of the way to the corner).
+                    float v = smoothstep(1.0 - u_Grade.z, 1.05, r);
+                    c = mix(c, u_Vignette.rgb, u_Grade.y * 0.85 * v * v);
                 }
                 o_Out = vec4(c, 1.0);
             }

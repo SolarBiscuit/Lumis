@@ -37,9 +37,8 @@ public final class LensEffects {
 
     /** Bloom chain: 1/2, 1/4, 1/8, 1/16, 1/32 of the screen. */
     private static final int LEVELS = 5;
-    /** Soft-knee threshold by day and by night (night lowers it so lanterns and glowstone bloom). */
-    private static final float THRESHOLD_DAY = 0.88f;
-    private static final float THRESHOLD_NIGHT = 0.62f;
+    /* Soft-knee thresholds by day and by night: options bloom_threshold and bloom_night_threshold (0.8.4; the night
+       one was 0.62, which only about 2,300 pixels of the night colour scene passed). */
     private static final float KNEE = 0.12f;
     /** Composite gain on the summed chain (tuned in tools/lumis_color_scene.txt at night, 0.8.3). */
     private static final float BLOOM_GAIN = 1.5f;
@@ -87,20 +86,20 @@ public final class LensEffects {
     }
 
     private static float bloom() {
-        return LumisConfig.lensBloom.get().floatValue();
+        return LumisConfig.lensBloomOn.get() ? LumisConfig.lensBloom.get().floatValue() : 0f;
     }
 
     private static float flare() {
-        return LumisConfig.lensFlare.get().floatValue();
+        return LumisConfig.lensFlareOn.get() ? LumisConfig.lensFlare.get().floatValue() : 0f;
     }
 
     /** -1..1, 0 neutral (the option's 50%). */
     private static float vibrance() {
-        return (LumisConfig.lensVibrance.get().floatValue() - 0.5f) * 2f;
+        return LumisConfig.lensVibranceOn.get() ? (LumisConfig.lensVibrance.get().floatValue() - 0.5f) * 2f : 0f;
     }
 
     private static float vignette() {
-        return LumisConfig.lensVignette.get().floatValue();
+        return LumisConfig.lensVignetteOn.get() ? LumisConfig.lensVignette.get().floatValue() : 0f;
     }
 
     /** No lens flare (or sun bloom core) under water, in lava, while blind, or with the sun below the horizon. */
@@ -188,7 +187,8 @@ public final class LensEffects {
             GL20C.glUniform1i(uBright[1], 12);
             GL20C.glUniform1i(uBright[2], 14);
             float day = smoothstep(-0.05f, 0.25f, SunModel.sunHeight);
-            GL20C.glUniform4f(uBright[3], lerp(THRESHOLD_NIGHT, THRESHOLD_DAY, day), KNEE, 1f, 0f);
+            GL20C.glUniform4f(uBright[3], lerp(LumisConfig.lensBloomNightThreshold.get().floatValue(),
+                    LumisConfig.lensBloomThreshold.get().floatValue(), day), KNEE, 1f, 0f);
             GL20C.glUniform4f(uBright[4], sunU, sunV, aspect, SUN_CORE);
             float core = flareFade * SUN_CORE_GAIN;
             GL20C.glUniform4f(uBright[5], SunModel.SUN[0] * core, SunModel.SUN[1] * core, SunModel.SUN[2] * core,
@@ -270,7 +270,9 @@ public final class LensEffects {
             float aspect = scene.width() / (float) Math.max(1, scene.height());
             GL20C.glUniform4f(uComposite[4], sunU, sunV, aspect, flareFade);
             GL20C.glUniform4f(uComposite[5], SunModel.SUN[0], SunModel.SUN[1], SunModel.SUN[2], 0f);
-            GL20C.glUniform4f(uComposite[6], vibrance, vignette, 0f, 0f);
+            GL20C.glUniform4f(uComposite[6], vibrance, vignette, LumisConfig.lensVignetteSize.get().floatValue(), 0f);
+            int tint = LumisConfig.lensVignetteColor.rgb();
+            GL20C.glUniform4f(uComposite[7], (tint >> 16 & 255) / 255f, (tint >> 8 & 255) / 255f, (tint & 255) / 255f, 0f);
             // Each pixel reads only itself after a barrier (GL 4.5), as the light-shaft composite does.
             GL45C.glTextureBarrier();
             GlslPrograms.drawFullscreen();
@@ -301,7 +303,8 @@ public final class LensEffects {
         uBright = locate(brightProgram, "u_Scene", "u_Depth", "u_SunVis", "u_Knee", "u_Sun", "u_SunCol");
         uDown = locate(downProgram, "u_Src");
         uUp = locate(upProgram, "u_Src", "u_Dst");
-        uComposite = locate(compositeProgram, "u_Scene", "u_Bloom", "u_SunVis", "u_Mix", "u_Sun", "u_SunCol", "u_Grade");
+        uComposite = locate(compositeProgram, "u_Scene", "u_Bloom", "u_SunVis", "u_Mix", "u_Sun", "u_SunCol", "u_Grade",
+                "u_Vignette");
         return true;
     }
 

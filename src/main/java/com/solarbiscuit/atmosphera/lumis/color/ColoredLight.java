@@ -105,7 +105,7 @@ public final class ColoredLight {
             out[0] = 1f / (FarHue.CELL * FarHue.NXZ);
             out[1] = 1f / (FarHue.CELL * FarHue.NY);
             out[2] = running && FarHue.allocated() ? 1f : 0f;
-            out[3] = LumisConfig.colorDark.get().floatValue();
+            out[3] = LumisConfig.colorDarkOn.get() ? LumisConfig.colorDark.get().floatValue() : 0f;
         });
         FarHue.register();
         com.solarbiscuit.atmosphera.lib.compat.voxy.VoxyBridge.addBeforeLodDraw(ColoredLight::bindForLods);
@@ -306,7 +306,8 @@ public final class ColoredLight {
         TINT[2] = Math.max(0f, tmp - co);
         float l = Math.max(0.05f, 0.2126f * TINT[0] + 0.7152f * TINT[1] + 0.0722f * TINT[2]);
         // Dark light (0.8.1) dims what it falls on, by its share of the light here.
-        float dim = 1f - Math.min(1f, darkW / accW) * LumisConfig.colorDark.get().floatValue() * k;
+        float darkStrength = LumisConfig.colorDarkOn.get() ? LumisConfig.colorDark.get().floatValue() : 0f;
+        float dim = 1f - Math.min(1f, darkW / accW) * darkStrength * k;
         float r = (1f + (TINT[0] / l - 1f) * k) * dim;
         float g = (1f + (TINT[1] / l - 1f) * k) * dim;
         float b = (1f + (TINT[2] / l - 1f) * k) * dim;

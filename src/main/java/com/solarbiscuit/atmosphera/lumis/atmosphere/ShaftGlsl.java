@@ -22,13 +22,35 @@ final class ShaftGlsl {
             }
             """;
 
+    /** Underwater caustics shared by the march and the Snell-window ray mask (0.8.6). */
+    private static final String CAUSTIC = """
+            uniform vec4 u_Waves[25]; // caustic terms: xy wave vector (radians per block), z amplitude,
+                                      // w phase at the camera now (camera position and drift added on the CPU)
+            // Caustics (0.8.6): the light the swell focuses, C = (sum of 5 drifting cosines)^2 / 2.5, mean 1, sparse
+            // bright spots that become beams below. Expanded it is 25 cosines (u_Waves), so its mean along a straight
+            // stretch of the surface has a closed form: each term times sinc(k . half-stretch). x is the stretch's
+            // middle and h its half-length (camera-relative, on the surface); returns C's mean minus 1.
+            // The march samples a step's caustics with this mean instead of at one point: sampling them at 6 points
+            // per 40-block ray aliased, and the temporal history averaged that into a plain glow (0.8.2-0.8.5).
+            float lumis_causticMean(vec2 x, vec2 h) {
+                float ac = 0.0;
+                for (int i = 0; i < 25; i++) {
+                    vec4 w = u_Waves[i];
+                    float a = dot(w.xy, h);
+                    float sinc = abs(a) < 1e-3 ? 1.0 : sin(a) / a;
+                    ac += w.z * sinc * cos(dot(w.xy, x) + w.w);
+                }
+                return ac;
+            }
+            """;
+
     /**
      * Volumetric march into the low-resolution target: rgb in-scattered light, a transmittance.
      * <p>
      * 0.6.0 "Air": energy-conserving steps ({@code T (1 - e^(-rho ds))}, so LOW and HIGH step counts give the same
-     * brightness), a two-lobe phase that follows the weather, air coloured by height, an optional invisible cloud
-     * layer that breaks up sunlight over open land (sky cookie), and block light glowing in the mist from the light
-     * colour volume (it follows the game's own light, so it stops at walls).
+     * brightness), a two-lobe phase that follows the weather, air coloured by height, and block light glowing in the
+     * mist from the light colour volume (it follows the game's own light, so it stops at walls). The sky cookie
+     * (0.6.0-0.8.12) was removed in 0.8.13: it never showed (p99 under 3/255).
      */
     static final String MARCH = """
             uniform sampler2D u_Depth;
@@ -43,46 +65,19 @@ final class ShaftGlsl {
             uniform vec4 u_Phase;   // x: forward lobe g, y: back lobe g, z: back lobe share
             uniform vec4 u_TintLow; // rgb: air colour at the base height, w: 1 / blocks to the high colour
             uniform vec4 u_TintHigh;// rgb: air colour high up
-            uniform vec4 u_Cookie;  // x: strength (0 off), y: layer height minus camera y, z: 1 / cell size
-            uniform vec4 u_CookieOff; // xy: wind drift of the layer, in blocks, mod 4096
             uniform vec4 u_Glow;    // x: block glow gain (0 off), y: glow reach (blocks from the camera)
             uniform vec4 u_Temporal; // x: this frame's jitter offset (0 without temporal accumulation)
             uniform vec4 u_Water;   // x: 1 = camera under water, y: water surface above the camera (camera-relative y),
                                     // z: caustic strength
             uniform vec4 u_Absorb;  // rgb: water absorption per block without Torrente
+            uniform vec4 u_Beam;    // x: haze (share of the mean light kept under water), y: beam gain, z: water gain
             out vec4 o_Out;
-            """ + COMMON + ShadowGlsl.VIS_POINT + com.solarbiscuit.atmosphera.lib.world.ColumnFieldShader.GLSL + """
+            """ + COMMON + CAUSTIC + ShadowGlsl.VIS_POINT + com.solarbiscuit.atmosphera.lib.world.ColumnFieldShader.GLSL + """
             float lumis_hg(float c, float g) {
                 float g2 = g * g;
                 return (1.0 - g2) / (LUMIS_PI4 * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
             }
 
-            // Value noise on whole cells, repeating every 64 cells (64-block cells repeat every 4096 blocks, like the
-            // camera position the frame block wraps).
-            float lumis_cellHash(ivec2 c) {
-                c &= ivec2(63);
-                uint h = uint(c.x) * 0x8da6b343u ^ uint(c.y) * 0xd8163841u;
-                h = (h ^ (h >> 15)) * 0x2c1b3c6du;
-                return float(h >> 8) * (1.0 / 16777216.0);
-            }
-            float lumis_vnoise(vec2 p) {
-                vec2 i = floor(p);
-                vec2 f = fract(p);
-                f = f * f * (3.0 - 2.0 * f);
-                ivec2 c = ivec2(i);
-                return mix(mix(lumis_cellHash(c), lumis_cellHash(c + ivec2(1, 0)), f.x),
-                           mix(lumis_cellHash(c + ivec2(0, 1)), lumis_cellHash(c + ivec2(1, 1)), f.x), f.y);
-            }
-            // Sky cookie: how much sunlight an invisible broken cloud layer lets through to point q (camera-relative),
-            // looked up where the ray from q to the sun crosses the layer.
-            float lumis_cookie(vec3 q) {
-                vec3 L = lumis_Sun.xyz;
-                if (L.y < 0.05) return 1.0;
-                vec2 xz = q.xz + L.xz * ((u_Cookie.y - q.y) / L.y) + atmos_CameraPos.xz + u_CookieOff.xy;
-                vec2 c = xz * u_Cookie.z;
-                float n = 0.65 * lumis_vnoise(c) + 0.35 * lumis_vnoise(c * 2.0 + vec2(17.0, 31.0));
-                return 1.0 - u_Cookie.x * smoothstep(0.42, 0.68, n);
-            }
             // Under water (0.7.2) ------------------------------------------------------------------------------
             // Absorption per block: Torrente's water style when it is installed and running, else the default.
             vec3 lumis_waterAbsorb() {
@@ -98,30 +93,22 @@ final class ShaftGlsl {
                 float top = atmos_waterTop(q);
                 return top > -1e8 ? top - atmos_CameraPos.y : u_Water.y;
             }
-            // Caustics where the sun ray from a point crosses the surface: bright lines where two drifting value-noise
-            // fields are equal (a web like light focused by waves), 0..1. Cells of 2 and 4/3 blocks repeat every 4096
-            // blocks with the wrapped camera position; both drift a whole number of 64-cell periods per hour of
-            // atmos_Time.y (16 and 20), so the hourly wrap does not jump.
-            float lumis_caustic(vec2 xz) {
-                float t = atmos_Time.y;
-                vec2 a = xz * 0.5 + vec2(1024.0, 512.0) * (t / 3600.0);
-                vec2 b = xz * 0.75 + vec2(-640.0, 1280.0) * (t / 3600.0) + vec2(31.0, 17.0);
-                float n = abs(lumis_vnoise(a) - lumis_vnoise(b));
-                return 1.0 - smoothstep(0.0, 0.1, n);
-            }
             // The march under water: uniform scattering, sunlight that crossed the water above the point (along the
             // refracted sun, n = 1.33) and the way back to the eye loses colour per channel, and the surface's
             // caustics break it into moving beams. The scene is not dimmed (vanilla's water fog already is).
             vec4 lumis_underwater(vec3 dir, float len, float jitter, int steps, float phase) {
-                vec3 absorb = lumis_waterAbsorb();
+                // 0.8.5: 40% of the style's absorption. The styles' coefficients colour the water over the view
+                // thickness, and vanilla's water fog already darkens what lies behind the beams; at full strength
+                // only 1-10% of the light reached the eye 15 blocks down (Aurora), so no beam showed.
+                vec3 absorb = lumis_waterAbsorb() * 0.4;
                 vec3 L = lumis_Sun.xyz;
                 float ly = sqrt(max(1.0 - (1.0 - L.y * L.y) / 1.7689, 0.0));
                 float invLy = 1.0 / max(ly, 0.05);
                 vec2 lxz = L.xz / 1.33;
+                // The surface point a sample's sun ray crosses moves this much per block along the view (flat surface).
+                vec2 drift = dir.xz - lxz * (dir.y * invLy);
                 float sunUp = smoothstep(0.0, 0.08, L.y);
                 vec3 acc = vec3(0.0);
-                float lit = 0.0;
-                float all_ = 0.0;
                 float transmit = 1.0;
                 float invSteps = 1.0 / float(steps);
                 for (int i = 0; i < steps; i++) {
@@ -134,22 +121,25 @@ final class ShaftGlsl {
                     float stepT = exp2(-1.442695 * u_Medium.x * ds);
                     float weight = transmit * (1.0 - stepT);
                     transmit *= stepT;
-                    all_ += weight;
                     float vis = lumis_visPoint(p);
                     if (vis <= 0.0) continue;
                     float below = max(lumis_waterSurface(p) - p.y, 0.0);
                     vec3 path = exp(-absorb * (below * invLy + s));
-                    vec2 surface = p.xz + lxz * (below * invLy) + atmos_CameraPos.xz;
-                    // Deep down the pattern blurs out (the waves' focus spreads), so it fades with depth.
-                    float k = u_Water.z * exp(-below * 0.06);
-                    float c = mix(1.0, 0.3 + 2.4 * lumis_caustic(surface), k);
+                    // Caustics over the whole step (0.8.6), from its middle: haze (the mean, dimmed) plus the beams.
+                    vec3 pm = dir * (s0 + 0.5 * ds);
+                    float belowM = max(lumis_waterSurface(pm) - pm.y, 0.0);
+                    vec2 surface = pm.xz + lxz * (belowM * invLy);
+                    // Deep down the pattern blurs out (the waves' focus spreads), so it fades with depth (0.8.4: slower).
+                    float k = u_Water.z * exp(-belowM * 0.025);
+                    // Capped (0.8.8; 1.5x since 0.8.12, 6x the haze): seen end-on, one caustic spot lines up along the whole ray towards
+                    // the sun and made a white disc there.
+                    float c = clamp(u_Beam.x + u_Beam.y * k * lumis_causticMean(surface, drift * (0.5 * ds)), 0.0, 1.5);
                     acc += (weight * vis * c) * path;
-                    lit += weight * vis;
                 }
-                // Beam contrast as in air (0.8.2): water lit all the way loses the most, so shadowed gaps (a pillar,
-                // a roof, a cliff) and the caustic streaks stand out instead of a uniform glow.
-                float litShare = lit / max(all_, 1e-6);
-                acc *= (1.0 - u_Shape.x * litShare) * u_Shape.y;
+                // 0.8.8: the haze/beam split replaces air's beam contrast (in open water it only dimmed everything),
+                // and the water gets its own gain: with a nearly even phase and absorption along the way the light
+                // scattered under water was about 0.2% of the sunlight, so beams swung by under 1/255.
+                acc *= u_Beam.z;
                 return vec4(u_Light.rgb * acc * (phase * sunUp), 1.0);
             }
 
@@ -198,14 +188,19 @@ final class ShaftGlsl {
                 float lobes = mix(lumis_hg(c, u_Phase.x), lumis_hg(c, -u_Phase.y), u_Phase.z);
                 float phase = mix(1.0 / LUMIS_PI4, lobes, 0.7);
                 bool sunOn = u_Info.w != 0;
-                bool cookie = u_Cookie.x > 0.0;
                 bool glow = u_Glow.x > 0.0;
                 // 0.7.1: with temporal accumulation the offset moves every frame (golden-ratio sequence), so the
                 // history averages different sample positions: more effective steps than are marched per frame.
                 float jitter = fract(lumis_ign(gl_FragCoord.xy) + u_Temporal.x);
                 if (u_Water.x > 0.5) {
-                    int wSteps = clamp(int(ceil(float(u_Info.y) * sqrt(len / u_Medium.w))), min(2, u_Info.y), u_Info.y);
-                    o_Out = lumis_underwater(dir, len, jitter, wSteps, phase);
+                    // 0.8.17: two thirds of air's steps (MEDIUM 4 per frame with temporal): the box-filtered caustics
+                    // cover each whole step, so fewer, longer steps keep the beams (measured in one session at 1440p).
+                    int wMax = max(2, (u_Info.y * 2 + 1) / 3);
+                    int wSteps = clamp(int(ceil(float(wMax) * sqrt(len / u_Medium.w))), min(2, wMax), wMax);
+                    // Under water (0.8.11) a broad lobe of its own (g 0.3), about 1.5x the even level towards the sun: air's forward
+                    // lobe (g about 0.85), even at 5% of the phase, made a white disc at the refracted sun.
+                    float waterPhase = mix(1.0 / LUMIS_PI4, lumis_hg(c, 0.3), 0.3);
+                    o_Out = lumis_underwater(dir, len, jitter, wSteps, waterPhase);
                     return;
                 }
                 // Steps follow the ray length (0.6.7): the steps are energy-conserving, so the count no longer changes
@@ -241,16 +236,9 @@ final class ShaftGlsl {
                     if (weight > 1e-5) {
                         if (sunOn) {
                             float vis = lumis_visPoint(p);
-                            // The cookie dims the light after beam contrast: contrast is measured on terrain shadows
-                            // only (inscatter), else the gaps it cuts would lower the lit share and contrast would
-                            // brighten the rest back, undoing the beams it makes.
-                            float lit = vis;
-                            if (cookie && vis > 0.0) {
-                                lit *= lumis_cookie(p);
-                            }
                             vec3 tint = mix(u_TintLow.rgb, u_TintHigh.rgb, clamp(above * u_TintLow.w, 0.0, 1.0));
                             inscatter += weight * vis;
-                            inscatterTint += (weight * lit) * tint;
+                            inscatterTint += (weight * vis) * tint;
                         }
                         if (glow && sMid < u_Glow.y) {
                             glowLight += weight * lumis_glow(dir * sMid);
@@ -358,6 +346,61 @@ final class ShaftGlsl {
             """;
 
     /**
+     * Snell-window ray mask (0.8.7, under water; pass 1 of 3 like {@link #RAY_MASK}): looking up from under water the
+     * sky shows through a window in the surface, within about 48.6 degrees of straight up (beyond it the surface
+     * reflects). Each low-resolution texel counts the share of its full-resolution depth texels that reach the water
+     * surface (the flat plane above the camera); kelp, rock or a mob in front of it stay dark and cut streaks. That
+     * share is weighted by the surface caustics and a core around the refracted sun, where the beams converge.
+     */
+    static final String RAY_MASK_WATER = """
+            layout(binding = 12) uniform sampler2D u_Depth;
+            uniform ivec4 u_Info;   // x: divisor
+            uniform vec4 u_SunPos;  // xy: refracted sun (0..1 screen), z: width / height
+            uniform vec4 u_Ray;     // x: core radius (fraction of the height), y: floor, z: caustic weight
+            uniform mat4 u_InvViewProj;
+            uniform mat4 u_ViewProj;
+            uniform vec4 u_Surface; // x: water surface above the camera (camera-relative y)
+            out vec4 o_Out;
+            """ + CAUSTIC + """
+            float lumis_linear(float d) {
+                return d >= 1.0 ? 1e5 : atmos_Proj.y / ((d * 2.0 - 1.0) + atmos_Proj.x);
+            }
+
+            void main() {
+                vec2 size = vec2(textureSize(u_Depth, 0));
+                int div = u_Info.x;
+                vec2 uv = gl_FragCoord.xy * float(div) / size;
+                vec4 far = u_InvViewProj * vec4(uv * 2.0 - 1.0, 1.0, 1.0);
+                vec3 dir = normalize(far.xyz / far.w);
+                float window = smoothstep(0.62, 0.70, dir.y);
+                if (window <= 0.0 || u_Surface.x <= 0.0) {
+                    o_Out = vec4(0.0, 0.0, 0.0, 1.0);
+                    return;
+                }
+                // Where this texel's ray meets the surface, and how far that is in view depth (clip w).
+                vec3 q = dir * (u_Surface.x / dir.y);
+                float plane = (u_ViewProj * vec4(q, 1.0)).w;
+                float tolerance = 0.06 * plane + 0.4;
+                int gathers = max(div / 2, 1);
+                vec2 base = floor(gl_FragCoord.xy) * float(div);
+                float open = 0.0;
+                for (int j = 0; j < gathers; j++) {
+                    for (int i = 0; i < gathers; i++) {
+                        vec4 d = textureGather(u_Depth, (base + vec2(2 * i, 2 * j) + 1.0) / size, 0);
+                        vec4 lin = vec4(lumis_linear(d.x), lumis_linear(d.y), lumis_linear(d.z), lumis_linear(d.w));
+                        open += dot(step(vec4(plane - tolerance), lin), vec4(1.0));
+                    }
+                }
+                open /= float(gathers * gathers * 4);
+                // Only the bright caustic spots (0.8.8): the blur turns them into streaks; the whole pattern gave a wash.
+                float caustic = max(lumis_causticMean(q.xz, vec2(0.0)) - 0.5, 0.0);
+                vec2 toSun = (u_SunPos.xy - uv) * vec2(u_SunPos.z, 1.0);
+                float core = exp(-dot(toSun, toSun) / (u_Ray.x * u_Ray.x));
+                o_Out = vec4(open * window * (caustic * u_Ray.z) * (core + u_Ray.y), 0.0, 0.0, 1.0);
+            }
+            """;
+
+    /**
      * Sun-ray blur (passes 2-3): 12 bilinear taps of the previous pass on the way to the sun, covering 1/12, then all
      * of the way. Nested, the two passes average 12 x 12 = 144 points between the pixel and the sun from 24 taps of a
      * small R16F texture: smooth rays without the grain of jittered samples. The last pass turns the average into
@@ -369,6 +412,8 @@ final class ShaftGlsl {
             uniform vec4 u_SunPos;  // xy: sun position (0..1 screen), z: width / height, w: reach (fraction of the height)
             uniform vec4 u_Step;    // x: share of the way to the sun this pass covers, y: exposure
             uniform vec4 u_Light;   // rgb: light colour with every strength applied
+            uniform vec4 u_Tint;    // rgb: water absorption per block without Torrente, w: blocks of water the rays
+                                    // cross (0 above water)
             out vec4 o_Out;
 
             void main() {
@@ -388,11 +433,35 @@ final class ShaftGlsl {
                 float fall = 1.0 - smoothstep(0.0, u_SunPos.w, length(toSun * vec2(u_SunPos.z, 1.0)));
                 // Soft cap: linear for faint rays, no white blob where the whole core is open.
                 float rays = (1.0 - exp(-acc * u_Step.y)) * fall;
-                o_Out = vec4(u_Light.rgb * rays, 1.0);
+                // Under water (0.8.13): coloured by the water they cross, in Torrente's style when it is installed
+                // (the march's 40%, as the march colours its light).
+                vec3 absorb = u_Tint.rgb;
+            #ifdef LUMIS_TORRENTE
+                if (dot(torrente_Absorb.rgb, vec3(1.0)) > 0.0) absorb = torrente_Absorb.rgb;
+            #endif
+                o_Out = vec4(u_Light.rgb * exp(-0.4 * absorb * u_Tint.w) * rays, 1.0);
                 if (u_Info.z != 0) {
                     // Debug: ray strength (red), averaged mask (green), falloff around the sun (blue).
                     o_Out = vec4(rays, acc, fall, 1.0);
                 }
+            }
+            """;
+
+    /**
+     * Low-resolution view depth (0.8.15): the depth texel the march and the composite's weights use for each
+     * low-resolution texel ({@code px * div + div / 2}), as linear view depth (sky 1e5), so the composite gathers four
+     * of them in one fetch instead of four scattered full-resolution reads.
+     */
+    static final String DEPTH_DOWN = """
+            uniform sampler2D u_Depth;
+            uniform ivec4 u_Info;   // x: divisor
+            out vec4 o_Out;
+
+            void main() {
+                ivec2 size = textureSize(u_Depth, 0);
+                ivec2 px = min(ivec2(gl_FragCoord.xy) * u_Info.x + u_Info.x / 2, size - 1);
+                float d = texelFetch(u_Depth, px, 0).r;
+                o_Out = vec4(d >= 1.0 ? 1e5 : atmos_Proj.y / ((d * 2.0 - 1.0) + atmos_Proj.x), 0.0, 0.0, 1.0);
             }
             """;
 
@@ -408,6 +477,7 @@ final class ShaftGlsl {
             uniform sampler2D u_Low;
             uniform sampler2D u_Depth;
             uniform sampler2D u_Scene;  // the colour this pass writes: each pixel reads only itself (texture barrier)
+            uniform sampler2D u_LowDepth; // 0.8.15: view depth of the texels the march used (q * div + div / 2)
             uniform vec4 u_Tone;        // x: share of a pixel's headroom the light may fill at most
             uniform ivec4 u_Info;   // x: divisor
             uniform vec4 u_Mix;     // x: how much the transmittance darkens the scene (mist), y: 1 = debug (replace the scene),
@@ -441,15 +511,20 @@ final class ShaftGlsl {
                 if (u_Mix.y < 0.5 && max(hi.r, max(hi.g, hi.b)) < 0.002 && (u_Mix.x <= 0.0 || lowT > 0.998)) {
                     discard;
                 }
-                float d = lumis_viewDepth(px);
-                float tolerance = 0.05 * d + 0.5;
-                ivec2 half_ = ivec2(div / 2);
-                ivec2 top = size - 1;
-                float w00 = (1.0 - f.x) * (1.0 - f.y) * (exp(-abs(lumis_viewDepth(min(q00 * div + half_, top)) - d) / tolerance) + 1e-3);
-                float w10 = f.x * (1.0 - f.y) * (exp(-abs(lumis_viewDepth(min(q10 * div + half_, top)) - d) / tolerance) + 1e-3);
-                float w01 = (1.0 - f.x) * f.y * (exp(-abs(lumis_viewDepth(min(q01 * div + half_, top)) - d) / tolerance) + 1e-3);
-                float w11 = f.x * f.y * (exp(-abs(lumis_viewDepth(min(q11 * div + half_, top)) - d) / tolerance) + 1e-3);
-                vec4 v = (s00 * w00 + s10 * w10 + s01 * w01 + s11 * w11) / max(w00 + w10 + w01 + w11, 1e-6);
+                // 0.8.15: the four texels' view depths in one gather of the low-resolution depth (stored once per
+                // frame) instead of four scattered full-resolution reads. Where they agree the light is smooth here:
+                // plain bilinear, without reading this pixel's depth. Near edges the depth-aware weights as before.
+                // Gather order: x (i0, j1), y (i1, j1), z (i1, j0), w (i0, j0); the edge clamp matches the clamp above.
+                vec4 wts = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+                vec4 ld = textureGather(u_LowDepth, (vec2(base) + 1.0) / vec2(lowSize), 0).wzxy;
+                float nearD = min(min(ld.x, ld.y), min(ld.z, ld.w));
+                float farD = max(max(ld.x, ld.y), max(ld.z, ld.w));
+                if (farD - nearD >= 0.05 * nearD + 0.5) {
+                    float d = lumis_viewDepth(px);
+                    float tolerance = 0.05 * d + 0.5;
+                    wts *= exp(-abs(ld - d) / tolerance) + 1e-3;
+                }
+                vec4 v = (s00 * wts.x + s10 * wts.y + s01 * wts.z + s11 * wts.w) / max(dot(wts, vec4(1.0)), 1e-6);
                 float t = mix(1.0, v.a, u_Mix.x);
                 // The mist scatters sky light too, not only sunlight: what it takes from the scene comes back as the
                 // fog colour (Atmospherics' colour, dark at night), so thick low mist turns hazy, not grey.
