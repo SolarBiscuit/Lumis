@@ -59,6 +59,8 @@ public final class ColoredLight {
     private static final EmitterIndex.Listener CHANGED = HueVolume::markAround;
     private static boolean running;
     private static ClientLevel runningLevel;
+    /** 0.9.0: light colours changed (a resource reload with other pack colours): recolour on the next frame. */
+    private static volatile boolean recolourPending;
 
     private ColoredLight() {
     }
@@ -74,6 +76,9 @@ public final class ColoredLight {
         // A requested unit (16 and up): register() holds only two samplers, lumis_Horizon and lumis_Hue.
         TerrainSamplers.request(feature, "lumis_HueDim", GL12C.GL_TEXTURE_3D, TerrainSamplers.Stage.FRAGMENT, 50,
                 HueVolume::dimTexture);
+        // 0.9.0: the far volume (NeoVoxy's emitter reports, 16-block cells) on Xenon terrain too, beyond the near one.
+        TerrainSamplers.request(feature, "lumis_HueFarTex", GL12C.GL_TEXTURE_3D, TerrainSamplers.Stage.FRAGMENT, 40,
+                () -> running && FarHue.allocated() ? FarHue.texture() : 0);
         // All passes: solid, cutout and translucent (water, glass, ice).
         int all = ShaderSnippets.PASS_ALL;
         ShaderSnippets.register(feature, ShaderHook.VERT_DECL, all, 25, HueGlsl.VERT_DECL);
@@ -113,6 +118,9 @@ public final class ColoredLight {
         MinecraftForge.EVENT_BUS.addListener(ColoredLight::onChunkLoad);
         MinecraftForge.EVENT_BUS.addListener(ColoredLight::onChunkUnload);
         MinecraftForge.EVENT_BUS.addListener(ColoredLight::onLogin);
+        // 0.9.0: light colours from resource packs (assets/lumis/light_colors/*.json).
+        net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext.get().getModEventBus().addListener(
+                (net.minecraftforge.client.event.RegisterClientReloadListenersEvent e) -> e.registerReloadListener(new PackColors()));
     }
 
     /** True while the light colour volume runs and holds colour somewhere (the shaft march's block glow). */
@@ -139,7 +147,18 @@ public final class ColoredLight {
     public static void update(Minecraft mc) {
         ClientLevel level = mc.level;
         boolean want = level != null && feature.isActive();
-        if (!want || level != runningLevel) {
+        cfgStrength = LumisConfig.colorStrength.get().floatValue();
+        cfgSaturation = LumisConfig.colorSaturation.get().floatValue();
+        cfgDark = LumisConfig.colorDarkOn.get() ? LumisConfig.colorDark.get().floatValue() : 0f;
+        cfgParticles = LumisConfig.colorParticles.get();
+        ParticleTint.newFrame(++frames);
+        boolean recolour = recolourPending;
+        if (recolour) {
+            recolourPending = false;
+            // Block-state colours are cached; drop them, then restart so every section and LOD reports again.
+            EmitterColors.reset();
+        }
+        if (!want || level != runningLevel || recolour) {
             if (running) {
                 running = false;
                 runningLevel = null;
@@ -244,9 +263,22 @@ public final class ColoredLight {
         if (!running || runningLevel == null || buffers instanceof TintedBuffers) {
             return buffers;
         }
-        float strength = LumisConfig.colorStrength.get().floatValue();
+        return tintAt(x, y, z, RGB) ? TintedBuffers.INSTANCE.reset(buffers, RGB[0], RGB[1], RGB[2]) : buffers;
+    }
+
+    private static final float[] RGB = new float[3];
+
+    /**
+     * The colour multiplier for something at a world position (the block-lit share of its light takes the light
+     * colour, as on terrain): false when it is about neutral. Shared by entities and particles (0.9.0). Render thread.
+     */
+    static boolean tintAt(double x, double y, double z, float[] out) {
+        if (!running || runningLevel == null) {
+            return false;
+        }
+        float strength = cfgStrength;
         if (strength <= 0f) {
-            return buffers;
+            return false;
         }
         float acc0 = 0f;
         float acc1 = 0f;
@@ -284,7 +316,7 @@ public final class ColoredLight {
             dynamicLevel = Math.max(dynamicLevel, pred);
         }
         if (accW <= 0f) {
-            return buffers;
+            return false;
         }
         // Block-lit share of the light here: vanilla's brightness curve for the block and sky levels.
         BlockPos pos = TINT_POS.set(Mth.floor(x), Mth.floor(y), Mth.floor(z));
@@ -295,9 +327,9 @@ public final class ColoredLight {
         float share = bb / Math.max(bb + sb, 1e-4f);
         float k = share * strength * cover;
         if (k < 0.02f) {
-            return buffers;
+            return false;
         }
-        float saturation = LumisConfig.colorSaturation.get().floatValue();
+        float saturation = cfgSaturation;
         float co = acc0 / accW * saturation;
         float cg = acc1 / accW * saturation;
         float tmp = 1f - cg;
@@ -306,15 +338,18 @@ public final class ColoredLight {
         TINT[2] = Math.max(0f, tmp - co);
         float l = Math.max(0.05f, 0.2126f * TINT[0] + 0.7152f * TINT[1] + 0.0722f * TINT[2]);
         // Dark light (0.8.1) dims what it falls on, by its share of the light here.
-        float darkStrength = LumisConfig.colorDarkOn.get() ? LumisConfig.colorDark.get().floatValue() : 0f;
+        float darkStrength = cfgDark;
         float dim = 1f - Math.min(1f, darkW / accW) * darkStrength * k;
         float r = (1f + (TINT[0] / l - 1f) * k) * dim;
         float g = (1f + (TINT[1] / l - 1f) * k) * dim;
         float b = (1f + (TINT[2] / l - 1f) * k) * dim;
         if (Math.abs(r - 1f) + Math.abs(g - 1f) + Math.abs(b - 1f) < 0.03f) {
-            return buffers;
+            return false;
         }
-        return TintedBuffers.INSTANCE.reset(buffers, r, g, b);
+        out[0] = r;
+        out[1] = g;
+        out[2] = b;
+        return true;
     }
 
     private static net.minecraft.world.entity.Entity pendingEntity;
@@ -388,6 +423,23 @@ public final class ColoredLight {
             EmitterIndex.onChunkUnload(chunk, CHANGED);
         }
     }
+
+    /** Light colours changed (resource packs, 0.9.0): rebuild the colour volumes on the render thread's next frame. */
+    static void recolour() {
+        recolourPending = true;
+    }
+
+    /** True while the colour volume runs (particles, 0.9.0). */
+    static boolean running() {
+        return running;
+    }
+
+    private static int frames;
+    /** Colour options read once per frame (0.9.1: Forge's option reads were a large share of the particle tint). */
+    private static float cfgStrength;
+    private static float cfgSaturation;
+    private static float cfgDark;
+    static boolean cfgParticles;
 
     private static void onLogin(ClientPlayerNetworkEvent.LoggingIn event) {
         // Block-state ids may differ per server.

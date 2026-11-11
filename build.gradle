@@ -56,6 +56,8 @@ dependencies {
     annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
     // Separate required jar at runtime (mods.toml dependency); compiled against its dev-named classes.
     compileOnly project(':AtmospheraLib')
+    // Embeddium's vertex writer API for tinted entities (0.9.0); used only when Embeddium (Xenon) is present.
+    compileOnly files('../AtmospheraLib/libs/xenon-0.3.31+mc1.20.1.jar')
 }
 
 tasks.named('processResources', ProcessResources).configure {

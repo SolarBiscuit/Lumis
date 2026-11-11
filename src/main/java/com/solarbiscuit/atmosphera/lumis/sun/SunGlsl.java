@@ -68,6 +68,10 @@ final class SunGlsl {
                 float lumisF = clamp(level / 15.0, 0.0, 1.0);
                 return lumisF / (4.0 - 3.0 * lumisF);
             }
+            // Distant sun shadows (0.10.0): bound by Lumis on unit 13 before each LOD draw (NeoVoxy API 4 leaves 8-13
+            // to extensions).
+            layout(binding = 13) uniform sampler2D lumis_FarShadowLod;
+            """ + com.solarbiscuit.atmosphera.lumis.shadow.ShadowGlsl.VIS_FAR + """
             #endif
             #endif
             """;
@@ -92,6 +96,14 @@ final class SunGlsl {
                     vec3 lumisShade = mix(lumis_Ambient.rgb * (1.0 - lumis_Ambient.w), vec3(1.0), lumisBlock);
                     vec3 lumisSun = mix(lumis_Tint.rgb * (1.0 + lumis_Tint.w), vec3(1.0), lumisBlock);
                     float lumisT = smoothstep(-0.35, 0.35, dot(f.geoNormal, lumis_Sun.xyz));
+                    // 0.10.0: in the shadow of distant terrain (lifted a block: LOD voxels are coarse).
+                    lumisT *= lumis_visFar(lumis_FarShadowLod, f.relPos + f.geoNormal * 0.5 + vec3(0.0, 1.0, 0.0), f.geoNormal);
+                    if (lumis_FarShadowSun.w < 0.0) {
+                        // 0.10.4 debug view (shadows.lod_shadow_debug): the raw distant visibility, without the facing
+                        // weight or any shading: white lit, red in the shadow of distant terrain.
+                        float lumisV = lumis_visFar(lumis_FarShadowLod, f.relPos + f.geoNormal * 0.5 + vec3(0.0, 1.0, 0.0), vec3(0.0));
+                        f.colour.rgb = mix(vec3(0.8, 0.08, 0.05), vec3(0.95), lumisV);
+                    }
                     f.colour.rgb *= mix(vec3(1.0), mix(lumisShade, lumisSun, lumisT), lumis_Sun.w);
                 }
             """;

@@ -341,7 +341,8 @@ final class ShaftGlsl {
                 vec2 uv = gl_FragCoord.xy * float(div) / size;
                 vec2 toSun = (u_SunPos.xy - uv) * vec2(u_SunPos.z, 1.0);
                 float core = exp(-dot(toSun, toSun) / (u_Ray.x * u_Ray.x));
-                o_Out = vec4(sky * (core + u_Ray.y), 0.0, 0.0, 1.0);
+                // 0.10.7: sky behind a cloud mod's clouds (Stratos) is not open sky for the rays.
+                o_Out = vec4(sky * (core + u_Ray.y) * atmos_cloudTransmittance(uv), 0.0, 0.0, 1.0);
             }
             """;
 

@@ -171,6 +171,10 @@ public final class LensEffects {
             GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, scene.depthTexture());
             GL20C.glUseProgram(sunVisProgram);
             GL20C.glUniform1i(uSunVis[0], 12);
+            // Cloud transmittance (lib CloudCover, 0.10.7) on unit 13; unit 13 gets the scene colour next.
+            GL13C.glActiveTexture(GL13C.GL_TEXTURE13);
+            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, com.solarbiscuit.atmosphera.lib.world.CloudCover.transmittanceTexture());
+            GL20C.glUniform1i(uSunVis[2], 13);
             // Without a usable sun the disc is put off the screen, so every tap counts as covered (visibility 0).
             GL20C.glUniform4f(uSunVis[1], flareFade > 0f ? sunU : -10f, flareFade > 0f ? sunV : -10f, aspect, SUN_DISC);
             GlslPrograms.drawFullscreen();
@@ -289,7 +293,8 @@ public final class LensEffects {
 
     private static boolean compile() {
         String header = GlslPrograms.header460();
-        sunVisProgram = program("Lumis lens sun", header + LensGlsl.SUN_VIS);
+        sunVisProgram = program("Lumis lens sun", header + com.solarbiscuit.atmosphera.lib.world.CloudCover.GLSL
+                + LensGlsl.SUN_VIS);
         brightProgram = program("Lumis bloom bright pass", header + LensGlsl.BRIGHT);
         downProgram = program("Lumis bloom down", header + LensGlsl.DOWN);
         upProgram = program("Lumis bloom up", header + LensGlsl.UP);
@@ -299,7 +304,7 @@ public final class LensEffects {
             Lumis.LOGGER.error("Lens effects are off: a shader did not compile (see above).");
             return false;
         }
-        uSunVis = locate(sunVisProgram, "u_Depth", "u_Sun");
+        uSunVis = locate(sunVisProgram, "u_Depth", "u_Sun", "atmos_CloudT");
         uBright = locate(brightProgram, "u_Scene", "u_Depth", "u_SunVis", "u_Knee", "u_Sun", "u_SunCol");
         uDown = locate(downProgram, "u_Src");
         uUp = locate(upProgram, "u_Src", "u_Dst");

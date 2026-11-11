@@ -43,6 +43,7 @@ public final class SunShadows {
     }
 
     private static boolean running;
+    private static ClientLevel farLevel;
 
     private SunShadows() {
     }
@@ -56,6 +57,10 @@ public final class SunShadows {
                 .requiresGl(4, 6)
                 .register();
         TerrainSamplers.register(feature, "lumis_Horizon", HorizonMap::texture);
+        // 0.10.0: distant shadows from NeoVoxy's LOD column tops, past the near window (a requested unit).
+        TerrainSamplers.request(feature, "lumis_FarShadow", org.lwjgl.opengl.GL11C.GL_TEXTURE_2D,
+                TerrainSamplers.Stage.FRAGMENT, 30, FarShadows::texture);
+        FarShadows.register();
         ShaderSnippets.register(feature, ShaderHook.FRAG_DECL, ShaderSnippets.PASS_ALL, 5, ShadowGlsl.FRAG_DECL);
 
         FrameUniforms.vec4("lumis_ShadowWin", "xy: camera minus shadow window centre (x, z), z: window size, w: minY", out -> {
@@ -70,6 +75,21 @@ public final class SunShadows {
             out[1] = HorizonMap.dirZ;
             out[2] = HorizonMap.tan;
             out[3] = 0.04f * LumisConfig.shadowSoftness.get().floatValue();
+        });
+        FrameUniforms.vec4("lumis_FarShadowWin", "xy: camera minus far shadow window centre (x, z), z: window size (blocks), w: 1 / cell size", out -> {
+            Vec3 camera = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
+            out[0] = (float) (camera.x - FarShadows.windowCentreX);
+            out[1] = (float) (camera.z - FarShadows.windowCentreZ);
+            out[2] = FarShadows.N * FarShadows.CELL;
+            out[3] = 1f / FarShadows.CELL;
+        });
+        FrameUniforms.vec4("lumis_FarShadowSun", "xy: horizontal direction to the sun, z: tan(elevation), w: strength (0 = off)", out -> {
+            out[0] = FarShadows.dirX;
+            out[1] = FarShadows.dirZ;
+            out[2] = FarShadows.tan;
+            float strength = running && FarShadows.texture() != 0 ? Math.max(0.01f, LumisConfig.shadowStrength.get().floatValue()) : 0f;
+            // Negative: the debug view (0.10.4) draws the raw distant visibility on LODs.
+            out[3] = LumisConfig.lodShadowDebug.get() ? -strength : strength;
         });
         FrameUniforms.vec4("lumis_ShadowMix", "x: shadow strength (0 = none), y: fade length at the window edge, z: tan(elevation) now", out -> {
             out[0] = running && HorizonMap.valid ? LumisConfig.shadowStrength.get().floatValue() : 0f;
@@ -97,18 +117,27 @@ public final class SunShadows {
             DimensionProfiles.Profile profile = DimensionProfiles.get(level);
             want = profile.sun() && profile.shadows();
         }
+        if (level != farLevel) {
+            // Heights belong to one world and dimension.
+            FarShadows.clear();
+            farLevel = level;
+        }
         if (!want) {
             if (running) {
                 running = false;
                 HorizonMap.release();
                 ColumnField.stop(SunShadows.class);
             }
+            FarShadows.update(false, 0, 0, 0f, 0f, 0f);
             return;
         }
         running = true;
         // The heightfield is the lib's column field since Lumis 0.7.0 (lib 0.5.0): shared with Torrente and Gale.
         ColumnField.use(SunShadows.class, level, LumisConfig.shadowQuality.get().size);
         HorizonMap.update(SunModel.dirX, SunModel.dirY, SunModel.dirZ, LumisConfig.shadowQuality.get().interval);
+        Vec3 cam = mc.gameRenderer.getMainCamera().getPosition();
+        FarShadows.update(LumisConfig.lodShadows.get() && LumisConfig.shadowQuality.get() != Quality.LOW,
+                cam.x, cam.z, SunModel.dirX, SunModel.dirY, SunModel.dirZ);
     }
 
     /**

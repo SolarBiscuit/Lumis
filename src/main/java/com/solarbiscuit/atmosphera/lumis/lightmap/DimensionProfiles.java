@@ -3,9 +3,9 @@ package com.solarbiscuit.atmosphera.lumis.lightmap;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.solarbiscuit.atmosphera.lib.options.AtmosPaths;
 import com.solarbiscuit.atmosphera.lumis.Lumis;
 import net.minecraft.world.level.Level;
-import net.minecraftforge.fml.loading.FMLPaths;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -15,7 +15,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Per-dimension light profiles from {@code config/SolConfig/atmosphera/lumis-dimensions.json}, keyed by dimension id
+ * Per-dimension light profiles from {@code config/Atmosphera/lumis-dimensions.json}, keyed by dimension id
  * with a {@code default} entry. The file is written with defaults when missing and re-read when it changes (checked
  * at most once a second). Render thread.
  */
@@ -76,7 +76,7 @@ public final class DimensionProfiles {
     }
 
     private static Path file() {
-        return FMLPaths.CONFIGDIR.get().resolve("SolConfig").resolve("atmosphera").resolve("lumis-dimensions.json");
+        return AtmosPaths.file("lumis-dimensions.json");
     }
 
     private static boolean reloadIfChanged() {

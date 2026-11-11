@@ -14,7 +14,7 @@ This is the feature set Lumis will have when its [roadmap](#roadmap) is complete
 
 ### Coloured light
 
-- **Coloured lightmap.** Warm block light with a per-dimension Kelvin colour, and a time-of-day sky tint. Dimension profiles live in `config/SolConfig/atmosphera/lumis-dimensions.json` (the Nether is warm and sunless, the End is cool and sunless).
+- **Coloured lightmap.** Warm block light with a per-dimension Kelvin colour, and a time-of-day sky tint. Dimension profiles live in `config/Atmosphera/lumis-dimensions.json` (the Nether is warm and sunless, the End is cool and sunless).
 - **Per-emitter colour.** Every light source has its own hue, held in a 3D volume around the camera. Light does not colour through walls, and neighbouring lights blend smoothly instead of meeting at a seam.
 - **Far colour.** A coarse second volume colours terrain between the near volume and the render distance, on Embeddium-based renderers and on NeoVoxy LODs.
 - **Held and dropped lights.** Lantern and torch colour follows the player's hands and dropped items, through CheapLighting's dynamic light sources.
@@ -94,7 +94,7 @@ Dates are not promised. Each feature release is a minor version (0.X.0). Version
 
 1. Install AtmospheraLib and an Embeddium-based terrain renderer.
 2. Place `lumis-<version>-mc1.20.1-forge.jar` in `mods`.
-3. Options are in the Atmosphera tab of Video Settings, and in `config/SolConfig/atmosphera/`.
+3. Options are in the Atmosphera tab of Video Settings, and in `config/Atmosphera/` (before AtmospheraLib 0.6.7: `config/SolConfig/atmosphera/`, moved across automatically).
 
 ## Building
 

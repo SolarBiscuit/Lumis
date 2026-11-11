@@ -60,6 +60,14 @@ public final class LightShafts {
         RADIAL
     }
 
+    /** Under water (0.10.5), independent of the air {@link Mode}. */
+    public enum UnderwaterMode {
+        /** The underwater march (beams and caustic curtains) while sun shadows run, plus the Snell-window rays. */
+        BEAMS,
+        /** Only the Snell-window rays (cheap). */
+        RAYS
+    }
+
     public enum Quality {
         /** Quarter width and height (1/16 of the pixels), 8 steps. */
         LOW(4, 8),
@@ -171,7 +179,21 @@ public final class LightShafts {
     private LightShafts() {
     }
 
+    /** The last march's mist for NeoVoxy's LOD fog hook ({@link LodFog}, 0.10.0). Render thread. */
+    static float tailDensity;
+    static float tailBase;
+    static float tailLimit;
+    static float tailMist;
+    static final float[] TAIL_COLOUR = new float[3];
+    private static long tailAt;
+
+    /** A march wrote the mist in the last 100 ms (else the LOD fog hook leaves NeoVoxy's fog alone). */
+    static boolean tailFresh() {
+        return System.nanoTime() - tailAt < 100_000_000L;
+    }
+
     public static void register() {
+        LodFog.register();
         feature = AtmosFeature.builder(Lumis.MOD_ID, "light_shafts")
                 .provides(Capability.VOLUMETRIC_LIGHT, Capability.GODRAYS)
                 .uses(AtmosFeature.Uses.OTHER)
@@ -239,11 +261,15 @@ public final class LightShafts {
         }
         boolean marchPossible = LumisConfig.shaftMode.get() == Mode.AUTO && SunShadows.ready();
         float waterOption = LumisConfig.shaftUnderwaterOn.get() ? LumisConfig.shaftUnderwater.get().floatValue() : 0f;
-        if (underwater && (!marchPossible || waterOption <= 0f)) {
+        // 0.10.5: under water the type is its own (underwater_mode), not the air type: RADIAL in the air used to turn
+        // everything off under water. Beams need sun shadows; without them the rays run alone.
+        boolean waterBeams = LumisConfig.shaftUnderwaterMode.get() == UnderwaterMode.BEAMS && SunShadows.ready();
+        if (underwater && waterOption <= 0f) {
             return;
         }
+        // Under water the strength is the underwater option alone (0.10.5: it was also scaled by the air strength).
         float light = underwater
-                ? SunModel.strength * LumisConfig.shaftStrength.get().floatValue() * waterOption * surfaceSky * surfaceSky
+                ? SunModel.strength * waterOption * surfaceSky * surfaceSky
                 : SunModel.strength * LumisConfig.shaftStrength.get().floatValue() * eyeSky * eyeSky;
         boolean sunOn = light > 0.003f;
         // Block glow (0.6.0) needs the march (AUTO with sun shadows) and coloured light holding colour somewhere.
@@ -261,7 +287,7 @@ public final class LightShafts {
             return;
         }
 
-        boolean volumetric = marchPossible;
+        boolean volumetric = underwater ? waterBeams : marchPossible;
         Quality quality = LumisConfig.shaftQuality.get();
         boolean temporal = volumetric && LumisConfig.shaftTemporal.get() && LumisConfig.shaftDebug.get() == 0;
         int divisor = volumetric ? quality.divisor : 4;
@@ -274,7 +300,8 @@ public final class LightShafts {
         // Screen rays only reach so far from the sun: they run inside a box around it (and only when the sun is in
         // front of the camera). RADIAL mode needs them; AUTO adds them over the march when sun rays are on.
         // Under water (0.8.7): rays from the Snell window, converging on the refracted sun.
-        boolean waterRays = underwater && sunOn && LumisConfig.shaftUnderwaterRays.get() && debug == 0;
+        // Without the underwater march (RAYS, or no sun shadows) the rays are the whole effect.
+        boolean waterRays = underwater && sunOn && (!volumetric || LumisConfig.shaftUnderwaterRays.get()) && debug == 0;
         boolean rays = waterRays || !underwater && sunOn && (!volumetric || LumisConfig.shaftSunRays.get() && debug == 0);
         int boxX = 0;
         int boxY = 0;
@@ -385,6 +412,19 @@ public final class LightShafts {
                             com.mojang.blaze3d.systems.RenderSystem.getShaderFogEnd())));
                 }
                 GL20C.glUniform4f(p.u()[5], density, 32f, level.getSeaLevel(), Math.max(16f, limit));
+                // 0.10.0: the mist past the march limit, for NeoVoxy's LOD composite (LodFog), from this march.
+                if (!underwater && volumetric && sunOn && mist > 0f) {
+                    tailDensity = density;
+                    tailBase = level.getSeaLevel();
+                    tailLimit = Math.max(16f, limit);
+                    tailMist = Math.min(1f, mist);
+                    float[] fog = com.mojang.blaze3d.systems.RenderSystem.getShaderFogColor();
+                    float sky = eyeSky * eyeSky;
+                    TAIL_COLOUR[0] = Math.min(1f, fog[0] * sky + 0.2f * r);
+                    TAIL_COLOUR[1] = Math.min(1f, fog[1] * sky + 0.2f * g);
+                    TAIL_COLOUR[2] = Math.min(1f, fog[2] * sky + 0.2f * b);
+                    tailAt = System.nanoTime();
+                }
                 float contrast = LumisConfig.shaftContrast.get().floatValue();
                 // Gain: beams through shade come out somewhat brighter than before, the open glow dimmer.
                 GL20C.glUniform4f(p.u()[6], contrast, 1f + 0.5f * contrast, 0f, 0f);
@@ -447,6 +487,12 @@ public final class LightShafts {
                     GL20C.glUniform4fv(p.u()[6], waveTerms(ctx.camera(), level, ctx.partialTick(), stack));
                 } else {
                     GL20C.glUniform4f(p.u()[2], RADIAL_CORE, RADIAL_FLOOR, 0f, 0f);
+                    // Cloud transmittance (lib CloudCover, 0.10.7) on unit 14; 0 without a cloud mod (not sampled).
+                    GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
+                    GL11C.glBindTexture(GL11C.GL_TEXTURE_2D,
+                            com.solarbiscuit.atmosphera.lib.world.CloudCover.transmittanceTexture());
+                    sceneBound = true;
+                    GL20C.glUniform1i(p.u()[3], 14);
                 }
                 GlslPrograms.drawFullscreen();
                 // Blur towards the sun, finest step first: A -> B -> light.
@@ -610,7 +656,8 @@ public final class LightShafts {
                 "u_Depth", "lumis_Horizon", "u_InvViewProj", "u_Info", "u_Light", "u_Medium", "u_Shape",
                 "u_Phase", "u_TintLow", "u_TintHigh", "u_Glow", "u_Hue", "u_Temporal",
                 "u_Water", "u_Absorb", "atmos_ColumnField", "u_HueDim", "u_Waves", "u_Beam");
-        rayMask = Program.of("Lumis sun-ray mask", header + ShaftGlsl.RAY_MASK, "u_Info", "u_SunPos", "u_Ray");
+        rayMask = Program.of("Lumis sun-ray mask", header + com.solarbiscuit.atmosphera.lib.world.CloudCover.GLSL
+                + ShaftGlsl.RAY_MASK, "u_Info", "u_SunPos", "u_Ray", "atmos_CloudT");
         rayMaskWater = Program.of("Lumis Snell-window ray mask", header + ShaftGlsl.RAY_MASK_WATER, "u_Info", "u_SunPos",
                 "u_Ray", "u_InvViewProj", "u_ViewProj", "u_Surface", "u_Waves");
         rayBlur = Program.of("Lumis sun-ray blur", header + water + ShaftGlsl.RAY_BLUR, "u_Info", "u_SunPos", "u_Step",

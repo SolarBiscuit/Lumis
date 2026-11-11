@@ -28,6 +28,7 @@ import java.util.Map;
  * <p>
  * Rules, first match wins:
  * <ol>
+ *   <li>resource packs ({@link PackColors}, 0.9.0: {@code assets/lumis/light_colors/*.json});</li>
  *   <li>vanilla ids (table);</li>
  *   <li>"soul" anywhere: soul colour; candles: neutral (their flame does not follow the wax colour);</li>
  *   <li>colour words in the id: dyes ({@code blue_iron_lantern}: Additional Lanterns' glass colour) and gems or
@@ -297,6 +298,11 @@ public final class EmitterColors {
         }
         ResourceLocation key = BuiltInRegistries.BLOCK.getKey(state.getBlock());
         String path = key.getPath();
+        // 0.9.0: resource packs first (assets/lumis/light_colors/*.json).
+        float[] pack = PackColors.find(key);
+        if (pack != null) {
+            return new Tint(pack == PackColors.DARK ? NEUTRAL : pack, pack == PackColors.DARK ? "dark" : "pack");
+        }
         // 0.8.1: Additional Lanterns' black lanterns give dark light (a whole "black" word, so the plain blackstone
         // lantern is not one; a black-dyed blackstone lantern is).
         if ("additionallanterns".equals(key.getNamespace()) && hasWord(path, "black") && hasWord(path, "lantern")) {

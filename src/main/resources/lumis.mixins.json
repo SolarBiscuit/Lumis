@@ -13,7 +13,8 @@
     "ItemInHandRendererMixin",
     "LevelRendererEntityMixin",
     "LightTextureMixin",
-    "LightingMixin"
+    "LightingMixin",
+    "SingleQuadParticleMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -9,8 +9,8 @@ import java.util.ArrayList;
 /**
  * A {@link MultiBufferSource} whose vertex consumers multiply every vertex colour by a tint: how entities, block
  * entities and held items get the colour of the light they stand in, without touching vanilla's shaders. Only used
- * when the tint is visibly not neutral, so everything else keeps the fast paths (Embeddium's model writer falls
- * back to vanilla's vertex calls for a consumer it does not know, which is the cost of a coloured entity).
+ * when the tint is visibly not neutral, so everything else keeps the fast paths. With Embeddium (0.9.0) the wrapper
+ * also takes Embeddium's whole-block vertex writes ({@link TintedFast}), so a tinted entity keeps its fast path too.
  * <p>
  * One instance, reused (0.5.8): entities, block entities and hands render one after another on the render thread, and
  * a nested tint request (a passenger, an item in a hand) keeps the outer one ({@link ColoredLight#tint}). The wrapping
@@ -27,7 +27,24 @@ public final class TintedBuffers implements MultiBufferSource {
     private final ArrayList<Tinted> pool = new ArrayList<>();
     private int used;
 
+    /** Embeddium's vertex writer API is present (Xenon / Embeddium installed): use {@link TintedFast}. */
+    private static final boolean FAST = hasWriterApi();
+
     private TintedBuffers() {
+    }
+
+    private static boolean hasWriterApi() {
+        try {
+            Class.forName("net.caffeinemc.mods.sodium.api.vertex.buffer.VertexBufferWriter", false,
+                    TintedBuffers.class.getClassLoader());
+            return true;
+        } catch (ClassNotFoundException | LinkageError e) {
+            return false;
+        }
+    }
+
+    static int clampByte(float v) {
+        return clamp(v);
     }
 
     /** Starts tinting another object. Render thread. */
@@ -46,7 +63,7 @@ public final class TintedBuffers implements MultiBufferSource {
         if (used < pool.size()) {
             t = pool.get(used);
         } else {
-            t = new Tinted();
+            t = FAST ? TintedFast.create() : new Tinted();
             pool.add(t);
         }
         used++;
@@ -62,7 +79,7 @@ public final class TintedBuffers implements MultiBufferSource {
         return v <= 0f ? 0 : v >= 255f ? 255 : (int) v;
     }
 
-    private static final class Tinted implements VertexConsumer {
+    static class Tinted implements VertexConsumer {
         VertexConsumer d;
         float r;
         float g;

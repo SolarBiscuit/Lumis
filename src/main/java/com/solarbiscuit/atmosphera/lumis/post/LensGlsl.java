@@ -25,7 +25,8 @@ final class LensGlsl {
                     float a = float(i) * 2.3999632;
                     vec2 uv = u_Sun.xy + vec2(cos(a) / u_Sun.z, sin(a)) * r;
                     if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0)))) {
-                        open += step(1.0, textureLod(u_Depth, uv, 0.0).r);
+                        // 0.10.7: times the cloud transmittance of a cloud mod (Stratos), 1 without one.
+                        open += step(1.0, textureLod(u_Depth, uv, 0.0).r) * atmos_cloudTransmittance(uv);
                     }
                 }
                 o_Out = vec4(open / 48.0, 0.0, 0.0, 1.0);

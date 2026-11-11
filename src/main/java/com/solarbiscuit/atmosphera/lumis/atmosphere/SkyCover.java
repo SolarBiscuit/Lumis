@@ -49,6 +49,13 @@ public final class SkyCover {
     }
 
     private static float read() {
+        // 0.10.7: clouds drawn by a cloud mod (Stratos, through the lib's CloudCover) hide the sun too.
+        float clouds = SunModel.sunHeight > 0f ? com.solarbiscuit.atmosphera.lib.world.CloudCover.sunCover()
+                : com.solarbiscuit.atmosphera.lib.world.CloudCover.moonCover();
+        return Math.max(clouds, readNuit());
+    }
+
+    private static float readNuit() {
         if (!probed) {
             probed = true;
             probe();

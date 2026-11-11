@@ -6,7 +6,7 @@ import com.solarbiscuit.atmosphera.lib.options.ChangeTier;
 import com.solarbiscuit.atmosphera.lumis.atmosphere.LightShafts;
 import com.solarbiscuit.atmosphera.lumis.shadow.SunShadows;
 
-/** {@code config/SolConfig/atmosphera/lumis-client.toml} and the "Lumis (light)" Video Settings page. */
+/** {@code config/Atmosphera/lumis-client.toml} and the "Lumis (light)" Video Settings page. */
 public final class LumisConfig {
     public static AtmosConfig.FeatureSwitch lightmap;
     public static AtmosOption<Double> blockWarmth;
@@ -26,6 +26,8 @@ public final class LumisConfig {
     public static AtmosOption<SunShadows.Quality> shadowQuality;
     public static AtmosOption<Double> shadowStrength;
     public static AtmosOption<Double> shadowSoftness;
+    public static AtmosOption<Boolean> lodShadows;
+    public static AtmosOption<Boolean> lodShadowDebug;
     public static AtmosOption<Boolean> entityShadows;
     public static AtmosConfig.FeatureSwitch lightShafts;
     public static AtmosOption<LightShafts.Mode> shaftMode;
@@ -43,6 +45,7 @@ public final class LumisConfig {
     public static AtmosOption<Boolean> shaftUnderwaterOn;
     public static AtmosOption<Double> shaftUnderwater;
     public static AtmosOption<Boolean> shaftUnderwaterRays;
+    public static AtmosOption<LightShafts.UnderwaterMode> shaftUnderwaterMode;
     public static AtmosConfig.FeatureSwitch coloredLight;
     public static AtmosOption<com.solarbiscuit.atmosphera.lumis.color.ColoredLight.Quality> colorQuality;
     public static AtmosOption<Double> colorStrength;
@@ -50,6 +53,7 @@ public final class LumisConfig {
     public static AtmosOption<Boolean> colorDarkOn;
     public static AtmosOption<Double> colorDark;
     public static AtmosOption<Boolean> colorDump;
+    public static AtmosOption<Boolean> colorParticles;
     public static AtmosConfig.FeatureSwitch wetSheen;
     public static AtmosOption<Double> wetStrength;
     public static AtmosOption<Boolean> wetRings;
@@ -120,13 +124,20 @@ public final class LumisConfig {
                 "How much sunlight a shadow takes away (as much as on faces turned from the sun at 100%).");
         shadowSoftness = config.percent("softness", 0.5, 0.0, 1.0, ChangeTier.LIVE, "Shadow softness",
                 "How soft shadow edges get with the distance to what casts them.");
+        lodShadows = config.toggle("lod_shadows", true, ChangeTier.LIVE, "Shadows on distant terrain",
+                "Mountains and cliffs far away cast sun shadows on distant (NeoVoxy) terrain too, from coarse heights "
+                        + "NeoVoxy reports (needs NeoVoxy 1.44.1 or newer; not on LOW shadow distance).");
+        lodShadowDebug = config.toggle("lod_shadow_debug", false, ChangeTier.LIVE, "Distant shadow debug view",
+                "For testing: distant (NeoVoxy) terrain is drawn white where the sun reaches it and red where distant "
+                        + "terrain shades it, with no other shading. Leave off.");
         entityShadows = config.toggle("entity_shadows", true, ChangeTier.LIVE, "Shadows on mobs",
                 "Mobs and players standing in a sun shadow are darker too.");
 
         config.section("light_shafts", "Light shafts: sunbeams through trees and gaps, in a thin mist.");
         lightShafts = config.featureSwitch("enabled", true, "Light shafts",
                 "Visible sunbeams where light falls through leaves, gaps and overhangs, and a thin mist near the "
-                        + "ground that the sun lights up. Off in caves, underwater and under Fabulous graphics.");
+                        + "ground that the sun lights up. Off in caves and under Fabulous graphics; under water they "
+                        + "follow the underwater options below.");
         shaftMode = config.choice("mode", LightShafts.Mode.AUTO, ChangeTier.LIVE, "Light shaft type",
                 "AUTO: real beams in the air while sun shadows are on, screen rays otherwise. RADIAL: always the "
                         + "cheaper screen rays from the sun (best for weak graphics cards).");
@@ -158,14 +169,21 @@ public final class LumisConfig {
                 "Each frame marches half the steps at a shifting offset and blends with the frames before (the camera's "
                         + "motion is followed), for smoother beams at lower cost. Off: every frame marches all steps.");
         shaftUnderwaterOn = config.toggle("underwater_enabled", true, ChangeTier.LIVE, "Underwater light shafts",
-                "Sunbeams through the water while your head is under water (strength below).");
+                "Sunbeams through the water while your head is under water (type and strength below), whatever the "
+                        + "light shaft type in the air.");
+        shaftUnderwaterMode = config.choice("underwater_mode", LightShafts.UnderwaterMode.BEAMS, ChangeTier.LIVE,
+                "Underwater sunbeam type",
+                "BEAMS: full sunbeams through the water, broken up by the moving caustics from the surface (needs sun "
+                        + "shadows; without them the rays below). RAYS: only rays from the bright window in the "
+                        + "surface (cheaper). Independent of the light shaft type in the air.");
         shaftUnderwater = config.percent("underwater", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Underwater light shaft strength",
                 "With your head under water: sunbeams through the water, coloured by its depth and broken up by "
-                        + "moving caustics from the surface. Uses Torrente's water colour when it is installed. Needs sun "
-                        + "shadows (AUTO light shafts). 0 is off.");
+                        + "moving caustics from the surface. Uses Torrente's water colour when it is installed. Separate "
+                        + "from the light shaft strength in the air. 0 is off.");
         shaftUnderwaterRays = config.toggle("underwater_rays", true, ChangeTier.LIVE, "Underwater sun rays",
-                "Looking up from under water: rays fanning out from the bright window in the surface towards the sun; "
-                        + "kelp, rock and mobs in front of it cut dark streaks.");
+                "Looking up from under water: rays fanning out from the bright window in the surface towards the sun, "
+                        + "over the beams; kelp, rock and mobs in front of it cut dark streaks. With the RAYS type they "
+                        + "are the whole effect.");
         shaftDebug = config.slider("debug", 0, 0, 3, 1, ChangeTier.LIVE, "Light shaft debug view",
                 "For testing: 1 march length / depth / sky (radial: open-sky share / falloff), 2 sun visibility in the "
                         + "air, 3 raw light. 0 is off.");
@@ -187,6 +205,9 @@ public final class LumisConfig {
         colorDark = config.percent("dark_light", 0.75, 0.0, 1.0, ChangeTier.LIVE, "Dark light strength",
                 "How much the light of black lanterns (Additional Lanterns) darkens what it falls on instead of "
                         + "lighting it white. Mobs still spawn by the game's own light level. 0 gives them plain light.");
+        colorParticles = config.toggle("particles", true, ChangeTier.LIVE, "Coloured particles",
+                "Smoke, dust and other particles take the colour of the light they drift through (flames and other "
+                        + "particles that give light keep their own colour).");
         colorDump = config.toggle("dump_colors", false, ChangeTier.LIVE, "List light colours (for pack makers)",
                 "Writes every light-emitting block, the colour it gets and why to logs/lumis-light-colors.csv once, "
                         + "when a world is loaded.");

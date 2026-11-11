@@ -93,6 +93,37 @@ final class HueGlsl {
                 tint *= 1.0 - clamp(dark / acc.z, 0.0, 1.0) * lumis_HueFar.w;
                 return vec4(tint, cov);
             }
+            // Distant light colour from NeoVoxy's emitter reports: 16-block cells, 2048 x 512 blocks around the camera.
+            // Shared by LODs and (0.9.0) Xenon terrain beyond the near volume.
+            vec4 lumis_farTint(sampler3D far, vec3 rel) {
+                if (lumis_HueFar.z <= 0.0) {
+                    return vec4(1.0, 1.0, 1.0, 0.0);
+                }
+                vec2 half_ = 0.5 / lumis_HueFar.xy;
+                float fade = (1.0 - smoothstep(half_.x - 320.0, half_.x - 160.0, max(abs(rel.x), abs(rel.z))))
+                        * (1.0 - smoothstep(half_.y - 160.0, half_.y - 136.0, abs(rel.y)));
+                if (fade <= 0.0) {
+                    return vec4(1.0, 1.0, 1.0, 0.0);
+                }
+                vec4 h = textureLod(far, (rel + atmos_CameraPos.xyz) * lumis_HueFar.xyx, 0.0);
+                if (h.b <= 0.02) {
+                    return vec4(1.0, 1.0, 1.0, 0.0);
+                }
+                vec2 ch = (h.rg / h.b - 0.5) * 4.0 * lumis_HueMix.w;
+                float tmp = 1.0 - ch.y;
+                vec3 tint = max(vec3(tmp + ch.x, 1.0 + ch.y, tmp - ch.x), 0.0);
+                tint /= max(dot(tint, vec3(0.2126, 0.7152, 0.0722)), 0.05);
+                return vec4(tint, smoothstep(0.02, 0.4, h.b) * fade);
+            }
+            // Near colour, with the far colour blended in where the near volume's coverage runs out.
+            vec4 lumis_lightTintFar(sampler3D near, sampler3D far, vec3 rel) {
+                vec4 t = lumis_lightTint(near, rel);
+                if (t.a < 0.999) {
+                    vec4 f = lumis_farTint(far, rel);
+                    t = vec4(mix(f.rgb, t.rgb, t.a), max(t.a, f.a));
+                }
+                return t;
+            }
             """;
 
     static final String FRAG_DECL = """
@@ -102,6 +133,7 @@ final class HueGlsl {
             uniform sampler3D lumis_Hue;
             #define LUMIS_HUE_DIM
             uniform sampler3D lumis_HueDim;
+            uniform sampler3D lumis_HueFarTex; // 0.9.0: the far volume (NeoVoxy's emitters) beyond the near one
             """ + COMMON + """
             #endif
             """;
@@ -110,7 +142,7 @@ final class HueGlsl {
     static final String FRAG_PRE_FOG = """
                 {
                     if (lumis_vBlockShare > 0.01 && lumis_HueMix.z > 0.0) {
-                        vec4 lumisT = lumis_lightTint(lumis_Hue, v_AtmosRelPos + atmos_FaceNormal * 0.5);
+                        vec4 lumisT = lumis_lightTintFar(lumis_Hue, lumis_HueFarTex, v_AtmosRelPos + atmos_FaceNormal * 0.5);
                         diffuseColor.rgb *= mix(vec3(1.0), lumisT.rgb, lumis_vBlockShare * lumis_HueMix.z * lumisT.a);
                     }
                 }
@@ -124,27 +156,6 @@ final class HueGlsl {
             layout(binding = 15) uniform sampler3D lumis_HueLod;
             layout(binding = 14) uniform sampler3D lumis_HueFarLod;
             """ + COMMON + """
-            // Distant light colour from NeoVoxy's emitter reports: 16-block cells, 2048 x 512 blocks around the camera.
-            vec4 lumis_farTint(vec3 rel) {
-                if (lumis_HueFar.z <= 0.0) {
-                    return vec4(1.0, 1.0, 1.0, 0.0);
-                }
-                vec2 half_ = 0.5 / lumis_HueFar.xy;
-                float fade = (1.0 - smoothstep(half_.x - 320.0, half_.x - 160.0, max(abs(rel.x), abs(rel.z))))
-                        * (1.0 - smoothstep(half_.y - 160.0, half_.y - 136.0, abs(rel.y)));
-                if (fade <= 0.0) {
-                    return vec4(1.0, 1.0, 1.0, 0.0);
-                }
-                vec4 h = textureLod(lumis_HueFarLod, (rel + atmos_CameraPos.xyz) * lumis_HueFar.xyx, 0.0);
-                if (h.b <= 0.02) {
-                    return vec4(1.0, 1.0, 1.0, 0.0);
-                }
-                vec2 ch = (h.rg / h.b - 0.5) * 4.0 * lumis_HueMix.w;
-                float tmp = 1.0 - ch.y;
-                vec3 tint = max(vec3(tmp + ch.x, 1.0 + ch.y, tmp - ch.x), 0.0);
-                tint /= max(dot(tint, vec3(0.2126, 0.7152, 0.0722)), 0.05);
-                return vec4(tint, smoothstep(0.02, 0.4, h.b) * fade);
-            }
             #endif
             #endif
             """;
@@ -153,12 +164,8 @@ final class HueGlsl {
                 {
                     if (f.block > 0.0 && lumis_HueMix.z > 0.0) {
                         vec3 lumisRel = f.relPos + f.geoNormal * 0.5;
-                        vec4 lumisT = lumis_lightTint(lumis_HueLod, lumisRel);
-                        if (lumisT.a < 0.999) {
-                            // Beyond the near volume: the far one (NeoVoxy's emitters), blended in by what is missing.
-                            vec4 lumisF = lumis_farTint(lumisRel);
-                            lumisT = vec4(mix(lumisF.rgb, lumisT.rgb, lumisT.a), max(lumisT.a, lumisF.a));
-                        }
+                        // Beyond the near volume: the far one (NeoVoxy's emitters), blended in by what is missing.
+                        vec4 lumisT = lumis_lightTintFar(lumis_HueLod, lumis_HueFarLod, lumisRel);
                         if (lumisT.a > 0.0) {
                         #ifdef VOXY_EXT_LIGHTMAP
                             const vec3 lumisHLum = vec3(0.2126, 0.7152, 0.0722);
