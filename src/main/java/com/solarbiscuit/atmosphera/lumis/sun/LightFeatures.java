@@ -2,6 +2,7 @@ package com.solarbiscuit.atmosphera.lumis.sun;
 
 import com.solarbiscuit.atmosphera.lib.feature.AtmosFeature;
 import com.solarbiscuit.atmosphera.lib.feature.Capability;
+import com.solarbiscuit.atmosphera.lib.world.CloudShadowShader;
 import com.solarbiscuit.atmosphera.lib.gpu.FrameUniforms;
 import com.solarbiscuit.atmosphera.lib.shader.ShaderHook;
 import com.solarbiscuit.atmosphera.lib.shader.ShaderSnippets;
@@ -47,6 +48,7 @@ public final class LightFeatures {
                 .switchedBy(LumisConfig.sunShading)
                 .enabledWhen(() -> LumisConfig.sunShading.enabled().get() && LumisConfig.lodShading.get())
                 .register();
+        CloudShadowShader.requireInTerrain(lodShading);
         entityLight = AtmosFeature.builder(Lumis.MOD_ID, "entity_light")
                 .provides(Capability.DIRECTIONAL_LIGHT)
                 .uses(AtmosFeature.Uses.OTHER)

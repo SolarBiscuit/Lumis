@@ -235,7 +235,9 @@ final class ShaftGlsl {
                     // High in thin air a step adds nothing visible: skip its fetches.
                     if (weight > 1e-5) {
                         if (sunOn) {
-                            float vis = lumis_visPoint(p);
+                            // Clouds shade the air too, so beams pour through cloud breaks; litShare uses the same
+                            // vis, so the contrast term does not cancel it.
+                            float vis = lumis_visPoint(p) * atmos_cloudShadow(p);
                             vec3 tint = mix(u_TintLow.rgb, u_TintHigh.rgb, clamp(above * u_TintLow.w, 0.0, 1.0));
                             inscatter += weight * vis;
                             inscatterTint += (weight * vis) * tint;

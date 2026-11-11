@@ -259,7 +259,9 @@ public final class LightShafts {
                 && (mc.player.hasEffect(MobEffects.BLINDNESS) || mc.player.hasEffect(MobEffects.DARKNESS))) {
             return;
         }
-        boolean marchPossible = LumisConfig.shaftMode.get() == Mode.AUTO && SunShadows.ready();
+        // 0.10.8: under a closed overcast the marched beams are invisible; skip the march (its cost) and keep the cheap path.
+        boolean marchPossible = LumisConfig.shaftMode.get() == Mode.AUTO && SunShadows.ready()
+                && com.solarbiscuit.atmosphera.lib.world.CloudCover.sunCover() <= 0.9f;
         float waterOption = LumisConfig.shaftUnderwaterOn.get() ? LumisConfig.shaftUnderwater.get().floatValue() : 0f;
         // 0.10.5: under water the type is its own (underwater_mode), not the air type: RADIAL in the air used to turn
         // everything off under water. Beams need sun shadows; without them the rays run alone.
@@ -395,6 +397,10 @@ public final class LightShafts {
                 GL20C.glUseProgram(p.id());
                 GL20C.glUniform1i(p.u()[0], 12);
                 GL20C.glUniform1i(p.u()[1], 13);
+                // Cloud shadow map (lib CloudShadowShader, 0.10.8) on unit 10; 0 without a cloud mod (not sampled).
+                GL13C.glActiveTexture(GL13C.GL_TEXTURE10);
+                GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, com.solarbiscuit.atmosphera.lib.world.CloudCover.shadowTexture());
+                GL20C.glUniform1i(p.u()[19], 10);
                 GL20C.glUniformMatrix4fv(p.u()[2], false, ctx.invViewProjection().get(stack.mallocFloat(16)));
                 // Temporal (0.7.1): half the steps per frame, the history makes up the rest.
                 int marchSteps = temporal ? Math.max(4, quality.steps / 2) : quality.steps;
@@ -619,6 +625,8 @@ public final class LightShafts {
             }
             GpuTimers.end("lumis_shafts_composite");
         } finally {
+            GL13C.glActiveTexture(GL13C.GL_TEXTURE10);
+            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
             if (sceneBound) {
                 sceneBound = false;
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
@@ -652,10 +660,10 @@ public final class LightShafts {
         String header = GlslPrograms.header460();
         // Torrente's water style slots are in the frame block when Torrente is installed (0.7.2).
         String water = FrameUniforms.glslBlock().contains("torrente_Absorb") ? "#define LUMIS_TORRENTE\n" : "";
-        march = Program.of("Lumis shaft march", header + water + ShaftGlsl.MARCH,
+        march = Program.of("Lumis shaft march", header + water + com.solarbiscuit.atmosphera.lib.world.CloudShadowShader.GLSL + ShaftGlsl.MARCH,
                 "u_Depth", "lumis_Horizon", "u_InvViewProj", "u_Info", "u_Light", "u_Medium", "u_Shape",
                 "u_Phase", "u_TintLow", "u_TintHigh", "u_Glow", "u_Hue", "u_Temporal",
-                "u_Water", "u_Absorb", "atmos_ColumnField", "u_HueDim", "u_Waves", "u_Beam");
+                "u_Water", "u_Absorb", "atmos_ColumnField", "u_HueDim", "u_Waves", "u_Beam", "atmos_CloudShadowMap");
         rayMask = Program.of("Lumis sun-ray mask", header + com.solarbiscuit.atmosphera.lib.world.CloudCover.GLSL
                 + ShaftGlsl.RAY_MASK, "u_Info", "u_SunPos", "u_Ray", "atmos_CloudT");
         rayMaskWater = Program.of("Lumis Snell-window ray mask", header + ShaftGlsl.RAY_MASK_WATER, "u_Info", "u_SunPos",

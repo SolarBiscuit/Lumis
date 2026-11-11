@@ -2,6 +2,7 @@ package com.solarbiscuit.atmosphera.lumis.shadow;
 
 import com.solarbiscuit.atmosphera.lib.feature.AtmosFeature;
 import com.solarbiscuit.atmosphera.lib.feature.Capability;
+import com.solarbiscuit.atmosphera.lib.world.CloudShadowShader;
 import com.solarbiscuit.atmosphera.lib.gpu.FrameUniforms;
 import com.solarbiscuit.atmosphera.lib.gpu.TerrainSamplers;
 import com.solarbiscuit.atmosphera.lib.world.ColumnField;
@@ -56,6 +57,7 @@ public final class SunShadows {
                 .enabledWhen(() -> LumisConfig.shadows.enabled().get() && LumisConfig.sunShading.enabled().get())
                 .requiresGl(4, 6)
                 .register();
+        CloudShadowShader.requireInTerrain(feature);
         TerrainSamplers.register(feature, "lumis_Horizon", HorizonMap::texture);
         // 0.10.0: distant shadows from NeoVoxy's LOD column tops, past the near window (a requested unit).
         TerrainSamplers.request(feature, "lumis_FarShadow", org.lwjgl.opengl.GL11C.GL_TEXTURE_2D,
@@ -157,7 +159,9 @@ public final class SunShadows {
         double x = Mth.lerp(partial, entity.xo, entity.getX());
         double y = Mth.lerp(partial, entity.yo, entity.getY());
         double z = Mth.lerp(partial, entity.zo, entity.getZ());
-        float vis = visibility(x, y + entity.getBbHeight() * 0.6, z);
+        // Entities near the player take the cloud cover of the camera's sun ray.
+        float vis = visibility(x, y + entity.getBbHeight() * 0.6, z)
+                * (1f - com.solarbiscuit.atmosphera.lib.world.CloudCover.sunCover());
         if (vis >= 0.999f) {
             return packed;
         }

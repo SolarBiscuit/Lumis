@@ -89,6 +89,9 @@ public final class ShadowGlsl {
                         v += (lumis_visFar(lumis_FarShadow, p + vec3(0.0, 0.5, 0.0), n) - 1.0) * (1.0 - nearW);
                     }
                 }
+#ifdef ATMOS_CLOUD_SHADOW
+                v *= atmos_cloudShadow(p);
+#endif
                 return v;
             }
             """;

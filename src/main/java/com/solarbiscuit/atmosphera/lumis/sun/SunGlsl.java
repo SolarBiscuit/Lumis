@@ -98,6 +98,9 @@ final class SunGlsl {
                     float lumisT = smoothstep(-0.35, 0.35, dot(f.geoNormal, lumis_Sun.xyz));
                     // 0.10.0: in the shadow of distant terrain (lifted a block: LOD voxels are coarse).
                     lumisT *= lumis_visFar(lumis_FarShadowLod, f.relPos + f.geoNormal * 0.5 + vec3(0.0, 1.0, 0.0), f.geoNormal);
+#ifdef ATMOS_CLOUD_SHADOW
+                    lumisT *= atmos_cloudShadow(f.relPos);
+#endif
                     if (lumis_FarShadowSun.w < 0.0) {
                         // 0.10.4 debug view (shadows.lod_shadow_debug): the raw distant visibility, without the facing
                         // weight or any shading: white lit, red in the shadow of distant terrain.
