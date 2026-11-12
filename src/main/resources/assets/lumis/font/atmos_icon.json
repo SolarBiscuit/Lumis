@@ -1,0 +1,13 @@
+{
+    "providers": [
+        {
+            "type": "bitmap",
+            "file": "lumis:font/atmos_icon.png",
+            "height": 9,
+            "ascent": 8,
+            "chars": [
+                "\ue000"
+            ]
+        }
+    ]
+}

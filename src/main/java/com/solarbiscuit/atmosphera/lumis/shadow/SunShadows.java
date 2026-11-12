@@ -58,6 +58,8 @@ public final class SunShadows {
                 .requiresGl(4, 6)
                 .register();
         CloudShadowShader.requireInTerrain(feature);
+        // 0.11.0: sunflecks under leaves read the column field's leaf flag.
+        com.solarbiscuit.atmosphera.lib.world.ColumnFieldShader.requireInTerrain(feature);
         TerrainSamplers.register(feature, "lumis_Horizon", HorizonMap::texture);
         // 0.10.0: distant shadows from NeoVoxy's LOD column tops, past the near window (a requested unit).
         TerrainSamplers.request(feature, "lumis_FarShadow", org.lwjgl.opengl.GL11C.GL_TEXTURE_2D,
@@ -93,10 +95,11 @@ public final class SunShadows {
             // Negative: the debug view (0.10.4) draws the raw distant visibility on LODs.
             out[3] = LumisConfig.lodShadowDebug.get() ? -strength : strength;
         });
-        FrameUniforms.vec4("lumis_ShadowMix", "x: shadow strength (0 = none), y: fade length at the window edge, z: tan(elevation) now", out -> {
+        FrameUniforms.vec4("lumis_ShadowMix", "x: shadow strength (0 = none), y: fade length at the window edge, z: tan(elevation) now, w: sunflecks under leaves", out -> {
             out[0] = running && HorizonMap.valid ? LumisConfig.shadowStrength.get().floatValue() : 0f;
             out[1] = 32f;
             out[2] = HorizonMap.sameDirection ? HorizonMap.tanNow : HorizonMap.tan;
+            out[3] = LumisConfig.leafDapple.get().floatValue();
         });
 
     }

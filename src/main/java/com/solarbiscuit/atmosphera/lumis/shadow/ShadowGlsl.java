@@ -32,7 +32,19 @@ public final class ShadowGlsl {
                         - max(dist - 0.5 - along, 0.0) * (lumis_ShadowMix.z - lumis_ShadowSun.z);
                 float vis = clamp((w.y - s) / (0.04 + dist * lumis_ShadowSun.w) + 0.5, 0.0, 1.0);
                 // A caster above in the same column: an overhang, a roof or a canopy.
-                if (own > 0.5 && w.y + 0.25 < lumis_ShadowWin.w + own / 16.0) vis = 0.0;
+                if (own > 0.5 && w.y + 0.25 < lumis_ShadowWin.w + own / 16.0) {
+                    vis = 0.0;
+            #ifdef ATMOS_COLUMN_FIELD
+                    // 0.11.0: under leaves (the column's top caster), sunflecks drift through the shade: two warped
+                    // sine fields, their product thresholded. Rates are whole cycles per hour (no jump at the wrap).
+                    if (lumis_ShadowMix.w > 0.0 && mod(atmos_columnRaw(q).a, 2.0) >= 1.0) {
+                        float t = atmos_Time.y * ATMOS_HOUR_CYCLE;
+                        float da = sin(w.x * 1.31 + sin(w.z * 0.73 + t * 1500.0) * 1.7 + t * 900.0);
+                        float db = sin(w.z * 1.17 + sin(w.x * 0.89 - t * 1300.0) * 1.5 - t * 700.0);
+                        vis = smoothstep(0.45, 0.95, da * db * 0.5 + 0.5) * lumis_ShadowMix.w;
+                    }
+            #endif
+                }
                 return mix(1.0, vis, clamp(edge / lumis_ShadowMix.y, 0.0, 1.0) * lumis_ShadowMix.x);
             }
             """;

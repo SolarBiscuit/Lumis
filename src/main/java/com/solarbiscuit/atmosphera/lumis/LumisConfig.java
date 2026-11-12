@@ -6,7 +6,7 @@ import com.solarbiscuit.atmosphera.lib.options.ChangeTier;
 import com.solarbiscuit.atmosphera.lumis.atmosphere.LightShafts;
 import com.solarbiscuit.atmosphera.lumis.shadow.SunShadows;
 
-/** {@code config/Atmosphera/lumis-client.toml} and the "Lumis (light)" Video Settings page. */
+/** {@code config/Atmosphera/lumis-client.toml} and the "Lumis" Video Settings page. */
 public final class LumisConfig {
     public static AtmosConfig.FeatureSwitch lightmap;
     public static AtmosOption<Double> blockWarmth;
@@ -29,6 +29,7 @@ public final class LumisConfig {
     public static AtmosOption<Boolean> lodShadows;
     public static AtmosOption<Boolean> lodShadowDebug;
     public static AtmosOption<Boolean> entityShadows;
+    public static AtmosOption<Double> leafDapple;
     public static AtmosConfig.FeatureSwitch lightShafts;
     public static AtmosOption<LightShafts.Mode> shaftMode;
     public static AtmosOption<LightShafts.Quality> shaftQuality;
@@ -75,7 +76,7 @@ public final class LumisConfig {
     }
 
     static void register() {
-        AtmosConfig config = AtmosConfig.create(Lumis.MOD_ID, "Lumis (light)");
+        AtmosConfig config = AtmosConfig.create(Lumis.MOD_ID, "Lumis");
         config.section("lightmap", "Light colour: the colour of block light and sky light, for everything that is lit.");
         lightmap = config.featureSwitch("enabled", true, "Light colour",
                 "Warmer torch and lamp light and a sky light that follows the time of day (amber dawn, rose dusk, "
@@ -132,6 +133,8 @@ public final class LumisConfig {
                         + "terrain shades it, with no other shading. Leave off.");
         entityShadows = config.toggle("entity_shadows", true, ChangeTier.LIVE, "Shadows on mobs",
                 "Mobs and players standing in a sun shadow are darker too.");
+        leafDapple = config.percent("leaf_dapple", 0.45, 0.0, 1.0, ChangeTier.LIVE, "Sunflecks under leaves",
+                "Under a leaf canopy, patches of sunlight drift across the ground in the shade (0% = solid shade).");
 
         config.section("light_shafts", "Light shafts: sunbeams through trees and gaps, in a thin mist.");
         lightShafts = config.featureSwitch("enabled", true, "Light shafts",

@@ -87,7 +87,7 @@ Dates are not promised. Each feature release is a minor version (0.X.0). Version
 
 - Minecraft **1.20.1** with Forge **47.x**
 - Java **17** or newer
-- [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) **0.8.0** or newer
+- [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) **0.9.2** or newer
 - An Embeddium-based terrain renderer (developed and tested with Xenon 0.3.31)
 - Optional: NeoVoxy or Voxy for LODs, CheapLighting for held lights, Nuit Forged for skybox suns, Torrente for underwater shafts
 

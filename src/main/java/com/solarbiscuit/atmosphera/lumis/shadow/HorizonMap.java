@@ -29,7 +29,10 @@ import java.nio.FloatBuffer;
  * Render thread only.
  */
 public final class HorizonMap {
+    /** Most doublings (8 draws, 128 blocks of reach). */
     private static final int PASSES = 7;
+    /** Fewest doublings (3: 8 blocks of reach). */
+    private static final int MIN_PASSES = 3;
 
     private static final String SOURCE = """
             uniform sampler2D u_Src;
@@ -96,6 +99,10 @@ public final class HorizonMap {
     private static int fboA;
     private static int fboB;
     private static int size;
+    /** Whether the last build ended in B (an odd number of doublings) or A. */
+    private static boolean endsInB = true;
+    /** Doublings of the last build, for /atmosphera status and the GPU timer's context. */
+    static int lastPasses = PASSES;
 
     /** Parameters of the last build; shaders and CPU marches must use these, not the current sun. */
     static boolean valid;
@@ -117,9 +124,25 @@ public final class HorizonMap {
     private HorizonMap() {
     }
 
-    /** The texture terrain samples (the last pass writes B), or 0. */
+    /** The texture terrain samples (whichever target the last pass wrote), or 0. */
     public static int texture() {
-        return valid ? texB : 0;
+        return valid ? (endsInB ? texB : texA) : 0;
+    }
+
+    /**
+     * 0.10.11 (S2): doublings this sun needs. No shadow is longer than the casters' height range over tan(elevation)
+     * (a blocker further away has sunk below every receiver's height), so at noon three or four doublings find
+     * everything the seven of a low sun do. Two blocks of margin keep the soft edge of the last shadow the same.
+     */
+    static int passCount(float tanElevation) {
+        float max = ColumnField.maxTop();
+        float min = ColumnField.minTop();
+        if (!(max > min)) {
+            return PASSES;
+        }
+        double reach = (max - min + 2.0) / Math.max(tanElevation, 1e-3);
+        int passes = (int) Math.ceil(Math.log(reach + 1.0) / Math.log(2.0));
+        return Math.max(MIN_PASSES, Math.min(PASSES, passes));
     }
 
     static void release() {
@@ -207,30 +230,9 @@ public final class HorizonMap {
             size = n;
         }
 
-        int previousDraw = GL11C.glGetInteger(GL30C.GL_DRAW_FRAMEBUFFER_BINDING);
-        int previousProgram = GL11C.glGetInteger(GL20C.GL_CURRENT_PROGRAM);
-        int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
-        int[] viewport = VIEWPORT;
-        GL11C.glGetIntegerv(GL11C.GL_VIEWPORT, viewport);
-        boolean blend = GL11C.glIsEnabled(GL11C.GL_BLEND);
-        boolean depth = GL11C.glIsEnabled(GL11C.GL_DEPTH_TEST);
-        boolean cull = GL11C.glIsEnabled(GL11C.GL_CULL_FACE);
-        boolean scissor = GL11C.glIsEnabled(GL11C.GL_SCISSOR_TEST);
-        boolean stencil = GL11C.glIsEnabled(GL11C.GL_STENCIL_TEST);
-        boolean[] mask = MASK;
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            ByteBuffer m = stack.malloc(4);
-            GL11C.glGetBooleanv(GL11C.GL_COLOR_WRITEMASK, m);
-            for (int i = 0; i < 4; i++) {
-                mask[i] = m.get(i) != 0;
-            }
-        }
-        GL11C.glColorMask(true, true, true, true);
-        disable(GL11C.GL_BLEND, blend);
-        disable(GL11C.GL_DEPTH_TEST, depth);
-        disable(GL11C.GL_CULL_FACE, cull);
-        disable(GL11C.GL_SCISSOR_TEST, scissor);
-        disable(GL11C.GL_STENCIL_TEST, stencil);
+        // 0.10.11 (S4): the lib's snapshot, as FarShadows uses, instead of about ten glGet/glIsEnabled calls per build
+        // (up to 30 builds a second): it reads GlStateManager's cache once it has been checked against the driver.
+        com.solarbiscuit.atmosphera.lib.gpu.GlStateSnapshot saved = com.solarbiscuit.atmosphera.lib.gpu.GlStateSnapshot.save();
 
         GpuTimers.begin("lumis_shadow_build");
         GL20C.glUseProgram(program);
@@ -242,25 +244,18 @@ public final class HorizonMap {
         GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
         GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
 
-        // S_0 from the heightfield into A, then A->B, B->A, ... ending in B.
+        // S_0 from the heightfield into A, then A->B, B->A, ...: as many doublings as this sun needs (S2).
+        int passes = passCount(tanElevation);
         pass(fboA, ColumnField.texture(), 0);
-        for (int k = 1; k <= PASSES; k++) {
+        for (int k = 1; k <= passes; k++) {
             boolean intoB = (k & 1) == 1;
             pass(intoB ? fboB : fboA, intoB ? texA : texB, 1 << (k - 1));
         }
+        endsInB = (passes & 1) == 1;
+        lastPasses = passes;
         GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
         GpuTimers.end("lumis_shadow_build");
-
-        GL13C.glActiveTexture(previousUnit);
-        GL20C.glUseProgram(previousProgram);
-        GL30C.glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER, previousDraw);
-        GL11C.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-        enable(GL11C.GL_BLEND, blend);
-        enable(GL11C.GL_DEPTH_TEST, depth);
-        enable(GL11C.GL_CULL_FACE, cull);
-        enable(GL11C.GL_SCISSOR_TEST, scissor);
-        enable(GL11C.GL_STENCIL_TEST, stencil);
-        GL11C.glColorMask(mask[0], mask[1], mask[2], mask[3]);
+        saved.restore();
 
         centreX = cx;
         centreZ = cz;
@@ -269,10 +264,6 @@ public final class HorizonMap {
         tan = tanElevation;
         return true;
     }
-
-    /** Saved GL state of a build (render thread). */
-    private static final int[] VIEWPORT = new int[4];
-    private static final boolean[] MASK = new boolean[4];
 
     private static void pass(int fbo, int source, int step) {
         GL30C.glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER, fbo);
@@ -312,15 +303,4 @@ public final class HorizonMap {
         return fbo;
     }
 
-    private static void disable(int cap, boolean was) {
-        if (was) {
-            GL11C.glDisable(cap);
-        }
-    }
-
-    private static void enable(int cap, boolean was) {
-        if (was) {
-            GL11C.glEnable(cap);
-        }
-    }
 }
