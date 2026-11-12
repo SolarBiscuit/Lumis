@@ -38,6 +38,13 @@ public final class Lumis {
         com.solarbiscuit.atmosphera.lumis.color.ColoredLight.register();
         com.solarbiscuit.atmosphera.lumis.weather.WetSheen.register();
         com.solarbiscuit.atmosphera.lumis.post.LensEffects.register();
+        // 0.10.9: /atmosphera reload shaders (and the reload key) rebuilds Lumis's post-pass programs too.
+        com.solarbiscuit.atmosphera.lib.options.AtmosReload.register(MOD_ID, () -> {
+            LightShafts.reloadShaders();
+            com.solarbiscuit.atmosphera.lumis.post.LensEffects.reloadShaders();
+            com.solarbiscuit.atmosphera.lumis.shadow.FarShadows.reloadShaders();
+            com.solarbiscuit.atmosphera.lumis.shadow.HorizonMap.reloadShaders();
+        });
         MinecraftForge.EVENT_BUS.addListener(EventPriority.LOW, Lumis::onRenderTick);
         MinecraftForge.EVENT_BUS.addListener((GameShuttingDownEvent e) -> stopping = true);
     }

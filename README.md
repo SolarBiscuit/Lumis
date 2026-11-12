@@ -76,9 +76,10 @@ Frame rate between separate runs swings far more than these costs, which is why 
 |---|---|---|
 | 0.1 to 0.5 | Foundation | Lightmap grading, dimension profiles, sun-directed shading, heightfield shadows, coloured light, colour on LODs, held lights |
 | 0.6.x | Air | Energy-conserving shafts, sky cookie, coloured mist, skybox whiteout fix, Nuit sun cover, length-scaled march steps |
-| 0.7.x | Time (**current: 0.7.1**) | Column field and sun source from AtmospheraLib, temporal shafts; **to do:** underwater shafts, bloom, wet sheen |
-| 0.8.0 | Reach | Far colour on Embeddium terrain, particle colour, resource-pack colours, LOD shadows, fog hand-over, Distant Horizons depth, tinted entities on the fast path |
-| 0.9.0 | Volume | Research: occupancy volume (sun through windows), leaf dapple, stained-glass tint |
+| 0.7.x | Time | Column field and sun source from AtmospheraLib, temporal shafts |
+| 0.8.x to 0.10.x | Lens and Reach (**current: 0.10.9**) | Bloom, lens flare, underwater beams, cloud shadows from Stratos, the reload hook for its four post programs (0.10.9) |
+| 0.9.0 | Reach | Far colour on Embeddium terrain, particle colour, resource-pack colours, LOD shadows, fog hand-over, Distant Horizons depth, tinted entities on the fast path |
+| 0.11.0 | Volume | Research: occupancy volume (sun through windows), leaf dapple, stained-glass tint |
 
 Dates are not promised. Each feature release is a minor version (0.X.0). Version 1.0.0 is only used when the project is declared complete.
 
@@ -86,7 +87,7 @@ Dates are not promised. Each feature release is a minor version (0.X.0). Version
 
 - Minecraft **1.20.1** with Forge **47.x**
 - Java **17** or newer
-- [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) **0.6.0** or newer
+- [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) **0.8.0** or newer
 - An Embeddium-based terrain renderer (developed and tested with Xenon 0.3.31)
 - Optional: NeoVoxy or Voxy for LODs, CheapLighting for held lights, Nuit Forged for skybox suns, Torrente for underwater shafts
 

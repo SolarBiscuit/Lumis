@@ -686,6 +686,17 @@ public final class LightShafts {
         return true;
     }
 
+    /** 0.10.9: the lib's shader reload ({@code /atmosphera reload shaders}): free the programs; the next frame rebuilds. */
+    public static void reloadShaders() {
+        for (Program p : new Program[] {depthDown, composite, march, rayMask, rayMaskWater, rayBlur, resolve}) {
+            if (p != null) {
+                com.solarbiscuit.atmosphera.lib.gpu.GpuResources.deleteProgram(p.id());
+            }
+        }
+        depthDown = composite = march = rayMask = rayMaskWater = rayBlur = resolve = null;
+        failed = false;
+    }
+
     private static void release() {
         if (history != null) {
             history.release();

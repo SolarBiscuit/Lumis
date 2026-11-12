@@ -86,6 +86,14 @@ public final class FarShadows {
     private static int fboA;
     private static int fboB;
     private static int program = -1;
+
+    /** 0.10.9: the lib's shader reload: free the program; the next use rebuilds it. */
+    public static void reloadShaders() {
+        if (program > 0) {
+            com.solarbiscuit.atmosphera.lib.gpu.GpuResources.deleteProgram(program);
+        }
+        program = -1;
+    }
     private static int uSrc;
     private static int uWin;
     private static int uSun;

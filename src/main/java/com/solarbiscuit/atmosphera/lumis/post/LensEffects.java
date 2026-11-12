@@ -313,6 +313,17 @@ public final class LensEffects {
         return true;
     }
 
+    /** 0.10.9: the lib's shader reload: free the programs; the next frame rebuilds them. */
+    public static void reloadShaders() {
+        for (int p : new int[] {sunVisProgram, brightProgram, downProgram, upProgram, compositeProgram}) {
+            if (p > 0) {
+                com.solarbiscuit.atmosphera.lib.gpu.GpuResources.deleteProgram(p);
+            }
+        }
+        sunVisProgram = brightProgram = downProgram = upProgram = compositeProgram = 0;
+        failed = false;
+    }
+
     private static int program(String name, String fragment) {
         return GlslPrograms.compile(name, GlslPrograms.FULLSCREEN_VERTEX_460, fragment);
     }
