@@ -50,6 +50,12 @@ public final class LensEffects {
 
     private static final RenderTargets.Target[] CHAIN = new RenderTargets.Target[LEVELS];
     private static RenderTargets.Target sunVis;
+    /**
+     * 0.11.2: a copy of the scene colour the composite reads. It read the scene's own colour attachment while drawing
+     * into it (a feedback loop made legal by a texture barrier), which crashed the AMD driver (atio6axx.dll access
+     * violation) a few seconds into some worlds.
+     */
+    private static RenderTargets.Target source;
     private static int sunVisProgram;
     private static int brightProgram;
     private static int downProgram;
@@ -250,20 +256,34 @@ public final class LensEffects {
         if (scene.colorTexture() == 0 || compositeProgram == 0 && !compile()) {
             return;
         }
+        if (source == null) {
+            source = RenderTargets.create("Lumis lens source", 1, GL11C.GL_RGBA8, false);
+        }
         GlStateSnapshot saved = GlStateSnapshot.save();
         try {
+            if (!source.ensure(scene)) {
+                return;
+            }
+            // 0.11.2: copy the scene colour first (a blit converts the format), then draw into the scene from the copy.
+            source.bindWrite();
+            GL30C.glBindFramebuffer(GL30C.GL_READ_FRAMEBUFFER, scene.framebuffer());
+            GL11C.glDisable(GL11C.GL_SCISSOR_TEST);
+            GL30C.glBlitFramebuffer(0, 0, scene.width(), scene.height(), 0, 0, source.width(), source.height(),
+                    GL11C.GL_COLOR_BUFFER_BIT, GL11C.GL_NEAREST);
             if (!RenderTargets.bindColorOnly(scene)) {
                 return;
             }
             GL11C.glDisable(GL11C.GL_BLEND);
             GL11C.glDisable(GL11C.GL_SCISSOR_TEST);
             GL11C.glDisable(GL11C.GL_DEPTH_TEST);
+            // 0.11.2: samplers the shader does not read this frame get a 1x1 black texture, never texture 0 (no
+            // texture). The AMD driver crash of 2026-11 was the frame block's explicit binding (lib 0.9.3), not this.
             GL13C.glActiveTexture(GL13C.GL_TEXTURE12);
-            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, lensReady ? sunVis.texture() : 0);
+            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, lensReady ? sunVis.texture() : blank());
             GL13C.glActiveTexture(GL13C.GL_TEXTURE13);
-            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, lensReady ? CHAIN[0].texture() : 0);
+            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, lensReady ? CHAIN[0].texture() : blank());
             GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
-            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, scene.colorTexture());
+            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, source.texture());
             GL20C.glUseProgram(compositeProgram);
             GL20C.glUniform1i(uComposite[0], 14);
             GL20C.glUniform1i(uComposite[1], 13);
@@ -277,8 +297,6 @@ public final class LensEffects {
             GL20C.glUniform4f(uComposite[6], vibrance, vignette, LumisConfig.lensVignetteSize.get().floatValue(), 0f);
             int tint = LumisConfig.lensVignetteColor.rgb();
             GL20C.glUniform4f(uComposite[7], (tint >> 16 & 255) / 255f, (tint >> 8 & 255) / 255f, (tint & 255) / 255f, 0f);
-            // Each pixel reads only itself after a barrier (GL 4.5), as the light-shaft composite does.
-            GL45C.glTextureBarrier();
             GlslPrograms.drawFullscreen();
         } finally {
             GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
@@ -289,6 +307,26 @@ public final class LensEffects {
             GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
             saved.restore();
         }
+    }
+
+    private static int blank;
+
+    /** A 1x1 black texture for samplers with nothing to read (created once, on unit 15). */
+    private static int blank() {
+        if (blank == 0) {
+            blank = com.solarbiscuit.atmosphera.lib.gpu.GpuResources.texture("Lumis lens blank");
+            int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
+            GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
+            int previous = GL11C.glGetInteger(GL11C.GL_TEXTURE_BINDING_2D);
+            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, blank);
+            GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MIN_FILTER, GL11C.GL_NEAREST);
+            GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MAG_FILTER, GL11C.GL_NEAREST);
+            GL11C.glTexImage2D(GL11C.GL_TEXTURE_2D, 0, GL11C.GL_RGBA8, 1, 1, 0, GL11C.GL_RGBA, GL11C.GL_UNSIGNED_BYTE,
+                    new int[] {0xFF000000});
+            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, previous);
+            GL13C.glActiveTexture(previousUnit);
+        }
+        return blank;
     }
 
     private static boolean compile() {

@@ -120,6 +120,7 @@ final class LensGlsl {
      * </ol>
      */
     static final String COMPOSITE = """
+            // 0.11.2: reads a copy of the scene (LensEffects.source), not the attachment it draws into.
             uniform sampler2D u_Scene;
             uniform sampler2D u_Bloom;
             uniform sampler2D u_SunVis;

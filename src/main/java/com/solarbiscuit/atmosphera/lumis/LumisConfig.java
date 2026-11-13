@@ -71,6 +71,7 @@ public final class LumisConfig {
     public static AtmosOption<Double> lensVignette;
     public static AtmosOption<Double> lensVignetteSize;
     public static AtmosOption<String> lensVignetteColor;
+    /** Test only (file): where the lens composite stops (0 = runs in full). */
 
     private LumisConfig() {
     }
@@ -259,7 +260,7 @@ public final class LumisConfig {
         lensVignetteSize = config.percent("vignette_size", 0.6, 0.0, 1.0, ChangeTier.LIVE, "Vignette size",
                 "How far in from the corners the shading reaches.");
         lensVignetteColor = config.color("vignette_color", "#000000", ChangeTier.LIVE, "Vignette colour",
-                "The colour the corners are shaded towards, for example #000000 (black, the default) or #1A0F2E."); 
+                "The colour the corners are shaded towards, for example #000000 (black, the default) or #1A0F2E.");
         config.register();
     }
 }
